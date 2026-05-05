@@ -1,0 +1,206 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Slowed Reverb Audio</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #2a2a2a;
+      --surface: #333;
+      --surface-hover: #3f3f3f;
+      --text: #e5e7eb;
+      --text-dim: #9ca3af;
+      --text-faint: #6b7280;
+      --accent: #3b82f6;
+      --accent-hover: #2563eb;
+      --track: #4b5563;
+      --danger: #ef4444;
+      --success: #22c55e;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body {
+      min-width: 280px;
+      background: var(--bg);
+      color: var(--text);
+      font: 13px/1.4 system-ui, -apple-system, sans-serif;
+    }
+    body { padding: 16px; }
+    .popup { display: flex; flex-direction: column; gap: 12px; }
+    .site-name {
+      text-align: center;
+      color: var(--text-dim);
+      font-size: 11px;
+      font-weight: 500;
+      letter-spacing: 0.04em;
+    }
+    .readout {
+      text-align: center;
+      font-size: 28px;
+      font-weight: 700;
+      font-variant-numeric: tabular-nums;
+      color: var(--text);
+    }
+    .readout-sm {
+      text-align: center;
+      font-size: 22px;
+      font-weight: 700;
+      font-variant-numeric: tabular-nums;
+      color: var(--text);
+    }
+    input[type="range"] {
+      width: 100%;
+      height: 6px;
+      -webkit-appearance: none;
+      appearance: none;
+      background: var(--track);
+      border-radius: 3px;
+      outline: none;
+      cursor: pointer;
+    }
+    input[type="range"]::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      appearance: none;
+      width: 18px;
+      height: 18px;
+      background: var(--accent);
+      border-radius: 50%;
+      cursor: pointer;
+      border: 2px solid var(--bg);
+    }
+    input[type="range"]::-moz-range-thumb {
+      width: 18px;
+      height: 18px;
+      background: var(--accent);
+      border-radius: 50%;
+      cursor: pointer;
+      border: 2px solid var(--bg);
+    }
+    input[type="range"]:disabled { opacity: 0.45; cursor: not-allowed; }
+    .pill-row {
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+      justify-content: center;
+    }
+    .pill {
+      appearance: none;
+      border: 0;
+      border-radius: 999px;
+      padding: 6px 12px;
+      background: var(--surface);
+      color: var(--text-dim);
+      font: inherit;
+      font-size: 12px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: background 120ms ease, color 120ms ease;
+    }
+    .pill:hover { background: var(--surface-hover); color: var(--text); }
+    .pill.active { background: var(--accent); color: #fff; }
+    .pill:disabled { opacity: 0.45; cursor: not-allowed; }
+    .toggles {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      justify-content: center;
+    }
+    .toggle-pill {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 12px;
+      background: var(--surface);
+      border-radius: 999px;
+      cursor: pointer;
+      user-select: none;
+      transition: background 120ms ease;
+    }
+    .toggle-pill:hover { background: var(--surface-hover); }
+    .toggle-pill input {
+      -webkit-appearance: none;
+      appearance: none;
+      width: 32px;
+      height: 18px;
+      background: var(--track);
+      border-radius: 999px;
+      position: relative;
+      cursor: pointer;
+      outline: none;
+      transition: background 120ms ease;
+    }
+    .toggle-pill input::before {
+      content: "";
+      position: absolute;
+      top: 2px;
+      left: 2px;
+      width: 14px;
+      height: 14px;
+      background: #d1d5db;
+      border-radius: 50%;
+      transition: transform 120ms ease;
+    }
+    .toggle-pill input:checked { background: var(--accent); }
+    .toggle-pill input:checked::before {
+      transform: translateX(14px);
+      background: #fff;
+    }
+    .toggle-pill input:disabled { opacity: 0.4; cursor: not-allowed; }
+    .toggle-pill span {
+      font-size: 12px;
+      color: var(--text-dim);
+      font-weight: 500;
+    }
+    .status {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      color: var(--text-faint);
+      font-size: 11px;
+    }
+    #status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--text-faint);
+      flex-shrink: 0;
+    }
+    #status-dot.green { background: var(--success); }
+    #status-dot.red { background: var(--danger); }
+  </style>
+</head>
+<body>
+  <div class="popup">
+    <div class="site-name" id="page-title">YouTube</div>
+    <div class="readout" id="slow-readout">1.00x</div>
+    <input type="range" id="slow-slider" min="0.6" max="1" step="0.01" value="1.00">
+    <div class="pill-row" id="flavor-row">
+      <button type="button" class="pill" data-flavor="none">None</button>
+      <button type="button" class="pill" data-flavor="moon">Moon</button>
+      <button type="button" class="pill" data-flavor="mars">Mars</button>
+      <button type="button" class="pill" data-flavor="jupiter">Jupiter</button>
+      <button type="button" class="pill" data-flavor="pluto">Pluto</button>
+    </div>
+    <div class="readout-sm" id="intensity-readout">34%</div>
+    <input type="range" id="intensity-slider" min="0" max="1" step="0.01" value="0.34">
+    <div class="toggles">
+      <label class="toggle-pill">
+        <input type="checkbox" id="remember-toggle" checked>
+        <span>Remember</span>
+      </label>
+      <label class="toggle-pill">
+        <input type="checkbox" id="power-toggle" checked>
+        <span>Active</span>
+      </label>
+    </div>
+    <div class="status">
+      <span id="status-dot"></span>
+      <span id="status-text">Checking tab...</span>
+    </div>
+  </div>
+  <script src="shared.js"></script>
+  <script src="popup.js"></script>
+</body>
+</html>

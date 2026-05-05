@@ -7,13 +7,10 @@ const slowSliderEl = document.getElementById('slow-slider');
 const slowReadoutEl = document.getElementById('slow-readout');
 const intensitySliderEl = document.getElementById('intensity-slider');
 const intensityReadoutEl = document.getElementById('intensity-readout');
-const flavorButtons = [...document.querySelectorAll('[data-flavor]')];
 
 const {
   formatPercent,
   formatRate,
-  normalizeActiveFlavor,
-  normalizeFlavor,
   normalizeSettings,
 } = globalThis.SlowedReverbShared;
 
@@ -47,51 +44,9 @@ slowSliderEl.addEventListener('input', () => {
 });
 
 intensitySliderEl.addEventListener('input', () => {
-  const nextIntensity = Number(intensitySliderEl.value);
-  const settings = { ...popupState.settings };
-
-  if (popupState.settings.reverbIntensity > 0) {
-    settings.lastReverbIntensity = popupState.settings.reverbIntensity;
-  }
-
-  settings.reverbIntensity = nextIntensity;
-
-  if (nextIntensity > 0) {
-    settings.lastReverbIntensity = nextIntensity;
-    if (settings.reverbFlavor === 'none') {
-      settings.reverbFlavor = normalizeActiveFlavor(settings.lastReverbFlavor);
-    }
-  }
-
+  const settings = { ...popupState.settings, reverbIntensity: Number(intensitySliderEl.value) };
   applySettingsToUi(settings);
   throttledApply(settings);
-});
-
-flavorButtons.forEach((button) => {
-  button.addEventListener('click', () => {
-    const flavor = normalizeFlavor(button.dataset.flavor);
-    const settings = { ...popupState.settings };
-
-    if (flavor === 'none') {
-      if (settings.reverbIntensity > 0) {
-        settings.lastReverbIntensity = settings.reverbIntensity;
-      }
-      if (settings.reverbFlavor !== 'none') {
-        settings.lastReverbFlavor = normalizeActiveFlavor(settings.reverbFlavor);
-      }
-      settings.reverbFlavor = 'none';
-      settings.reverbIntensity = 0;
-    } else {
-      settings.lastReverbFlavor = flavor;
-      settings.reverbFlavor = flavor;
-      if (popupState.settings.reverbFlavor === 'none' && popupState.settings.reverbIntensity === 0) {
-        settings.reverbIntensity = popupState.settings.lastReverbIntensity;
-      }
-    }
-
-    applySettingsToUi(settings);
-    throttledApply(settings);
-  });
 });
 
 async function init() {
@@ -147,7 +102,6 @@ function setSupportedUi(supported) {
   intensitySliderEl.disabled = !supported;
   powerToggleEl.disabled = !supported;
   rememberToggleEl.disabled = !supported;
-  flavorButtons.forEach((button) => { button.disabled = !supported; });
 }
 
 function applySettingsToUi(settings) {
@@ -157,11 +111,6 @@ function applySettingsToUi(settings) {
   intensitySliderEl.value = String(normalized.reverbIntensity);
   slowReadoutEl.textContent = formatRate(normalized.slow);
   intensityReadoutEl.textContent = formatPercent(normalized.reverbIntensity);
-
-  const flavor = normalizeFlavor(normalized.reverbFlavor);
-  flavorButtons.forEach((button) => {
-    button.classList.toggle('active', button.dataset.flavor === flavor);
-  });
 }
 
 function throttledApply(settings) {

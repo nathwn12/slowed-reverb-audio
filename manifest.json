@@ -31,6 +31,10 @@
   "background": {
     "service_worker": "background.js"
   },
+  "web_accessible_resources": [{
+    "resources": ["dattorro-worklet.js"],
+    "matches": ["https://youtube.com/*", "https://www.youtube.com/*", "https://music.youtube.com/*"]
+  }],
   "action": {
     "default_title": "Slowed Reverb Audio",
     "default_popup": "popup.html"

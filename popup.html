@@ -78,28 +78,6 @@
       border: 2px solid var(--bg);
     }
     input[type="range"]:disabled { opacity: 0.45; cursor: not-allowed; }
-    .pill-row {
-      display: flex;
-      gap: 6px;
-      flex-wrap: wrap;
-      justify-content: center;
-    }
-    .pill {
-      appearance: none;
-      border: 0;
-      border-radius: 999px;
-      padding: 6px 12px;
-      background: var(--surface);
-      color: var(--text-dim);
-      font: inherit;
-      font-size: 12px;
-      font-weight: 500;
-      cursor: pointer;
-      transition: background 120ms ease, color 120ms ease;
-    }
-    .pill:hover { background: var(--surface-hover); color: var(--text); }
-    .pill.active { background: var(--accent); color: #fff; }
-    .pill:disabled { opacity: 0.45; cursor: not-allowed; }
     .toggles {
       display: flex;
       gap: 8px;
@@ -176,13 +154,6 @@
     <div class="site-name" id="page-title">YouTube</div>
     <div class="readout" id="slow-readout">1.00x</div>
     <input type="range" id="slow-slider" min="0.6" max="1" step="0.01" value="1.00">
-    <div class="pill-row" id="flavor-row">
-      <button type="button" class="pill" data-flavor="none">None</button>
-      <button type="button" class="pill" data-flavor="moon">Moon</button>
-      <button type="button" class="pill" data-flavor="mars">Mars</button>
-      <button type="button" class="pill" data-flavor="jupiter">Jupiter</button>
-      <button type="button" class="pill" data-flavor="pluto">Pluto</button>
-    </div>
     <div class="readout-sm" id="intensity-readout">34%</div>
     <input type="range" id="intensity-slider" min="0" max="1" step="0.01" value="0.34">
     <div class="toggles">

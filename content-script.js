@@ -94,9 +94,23 @@
       if (!(media instanceof HTMLMediaElement)) return;
       trackMedia(media);
       void resumeContext().then(() => {
+        const ctrl = state.media.get(media);
+        if (ctrl && ctrl.attached) {
+          teardownController(ctrl, false);
+          ctrl.attached = false;
+        }
         syncMediaController(state.media.get(media));
       });
       syncMediaController(state.media.get(media));
+    }, true);
+
+    document.addEventListener('playing', (event) => {
+      const media = event.target;
+      if (!(media instanceof HTMLMediaElement)) return;
+      trackMedia(media);
+      void resumeContext().then(() => {
+        syncMediaController(state.media.get(media));
+      });
     }, true);
 
     ['pointerdown', 'keydown', 'mousedown', 'touchstart'].forEach((eventName) => {
@@ -240,6 +254,7 @@
       convolver: null,
       wetTone: null,
       wetGain: null,
+      masterGain: null,
       originalRate: media.playbackRate,
       originalPitch: readPitchState(media),
       originalMuted: media.muted,
@@ -275,9 +290,15 @@
       queueRecovery('loadedmetadata');
     };
 
+    controller.volumeHandler = () => {
+      if (!controller.attached || !controller.masterGain) return;
+      controller.masterGain.gain.value = controller.media.volume;
+    };
+
     media.addEventListener('ratechange', controller.rateHandler);
     media.addEventListener('emptied', controller.resetHandler);
     media.addEventListener('loadedmetadata', controller.loadHandler);
+    media.addEventListener('volumechange', controller.volumeHandler);
     state.media.set(media, controller);
     return controller;
   }
@@ -315,6 +336,7 @@
 
   function ensureAttached(controller) {
     if (controller.attached) return true;
+    if (!isMediaReadyForAttach(controller.media)) return false;
 
     controller.failed = false;
     controller.attachError = '';
@@ -330,12 +352,22 @@
         throw new Error('captureStream unavailable for this media element.');
       }
 
+      if (!stream.getAudioTracks().length) {
+        stream.addEventListener('addtrack', function onTrack(event) {
+          if (event.track.kind === 'audio') {
+            stream.removeEventListener('addtrack', onTrack);
+            queueScan();
+          }
+        });
+      }
+
       const source = controller.source || context.createMediaStreamSource(stream);
       const dryGain = context.createGain();
       const wetInput = context.createGain();
       const convolver = context.createConvolver();
       const wetTone = context.createBiquadFilter();
       const wetGain = context.createGain();
+      const masterGain = context.createGain();
 
       dryGain.gain.value = 1;
       wetInput.gain.value = 0.9;
@@ -343,14 +375,16 @@
       wetTone.frequency.value = 5000;
       wetTone.Q.value = 0.5;
       wetGain.gain.value = 0;
+      masterGain.gain.value = controller.media.volume;
 
       source.connect(dryGain);
-      dryGain.connect(context.destination);
+      dryGain.connect(masterGain);
       source.connect(wetInput);
       wetInput.connect(convolver);
       convolver.connect(wetTone);
       wetTone.connect(wetGain);
-      wetGain.connect(context.destination);
+      wetGain.connect(masterGain);
+      masterGain.connect(context.destination);
 
       controller.stream = stream;
       controller.source = source;
@@ -359,9 +393,9 @@
       controller.convolver = convolver;
       controller.wetTone = wetTone;
       controller.wetGain = wetGain;
+      controller.masterGain = masterGain;
       controller.attached = true;
       controller.attachError = '';
-      controller.media.muted = isReplacementAudioReady();
       void resumeContext().then(() => {
         syncMediaController(controller);
       });
@@ -403,8 +437,25 @@
     return null;
   }
 
-  function isReplacementAudioReady() {
-    return Boolean(state.context && state.context.state === 'running');
+  function isMediaReadyForAttach(media) {
+    return Boolean(
+      media &&
+      !media.paused &&
+      !media.ended &&
+      media.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA &&
+      (media.currentSrc || media.srcObject)
+    );
+  }
+
+  function shouldMuteNativeElement(controller) {
+    if (!state.context || state.context.state !== 'running') return false;
+    if (!controller || !controller.stream) return false;
+    try {
+      const tracks = controller.stream.getAudioTracks();
+      return tracks.length > 0 && tracks.some(t => t.enabled);
+    } catch {
+      return false;
+    }
   }
 
   function updateWetChain(controller) {
@@ -482,7 +533,7 @@
         setPreservesPitch(media, preservePitch);
         media.playbackRate = rate;
       }
-      media.muted = isReplacementAudioReady();
+      media.muted = shouldMuteNativeElement(controller);
     } finally {
       setTimeout(() => {
         controller.internalRateWrite = false;
@@ -500,6 +551,7 @@
       disconnectNode(controller.convolver);
       disconnectNode(controller.wetTone);
       disconnectNode(controller.wetGain);
+      disconnectNode(controller.masterGain);
     }
 
     restoreMediaPlaybackState(controller);
@@ -512,6 +564,7 @@
     controller.convolver = null;
     controller.wetTone = null;
     controller.wetGain = null;
+    controller.masterGain = null;
 
     if (removeCompletely) {
       if (controller.rateHandler) {
@@ -525,6 +578,10 @@
       if (controller.loadHandler) {
         controller.media.removeEventListener('loadedmetadata', controller.loadHandler);
         controller.loadHandler = null;
+      }
+      if (controller.volumeHandler) {
+        controller.media.removeEventListener('volumechange', controller.volumeHandler);
+        controller.volumeHandler = null;
       }
     }
   }

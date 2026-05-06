@@ -202,6 +202,20 @@
     });
   }
 
+  function queueCriticalRecovery(reason) {
+    state.recoveryQueued = true;
+
+    if (!state.pageHookReady || reason === 'bootstrap' || reason === 'missing-hook') {
+      void requestHookRefresh(reason);
+    }
+
+    queueMicrotask(() => {
+      state.recoveryQueued = false;
+      queueScan();
+      syncAllMedia();
+    });
+  }
+
   async function requestHookRefresh(reason) {
     if (state.hookRefreshQueued) return;
     state.hookRefreshQueued = true;
@@ -227,7 +241,7 @@
 
     for (const [media, controller] of state.media.entries()) {
       if (media.isConnected) continue;
-      teardownController(controller, true);
+      teardownController(controller, true, state.context);
       state.media.delete(media);
     }
   }
@@ -238,6 +252,7 @@
     const controller = {
       media,
       attached: false,
+      attachedSrc: '',
       failed: false,
       attachError: '',
       stream: null,
@@ -267,17 +282,24 @@
 
     controller.resetHandler = () => {
       if (controller.attached) {
-        teardownController(controller, false);
+        teardownController(controller, false, state.context);
         controller.attached = false;
         controller.stream = null;
         controller.source = null;
         controller.failed = false;
       }
-      queueRecovery('emptied');
+      queueCriticalRecovery('emptied');
     };
 
     controller.loadHandler = () => {
-      queueRecovery('loadedmetadata');
+      if (controller.attached) {
+        teardownController(controller, false, state.context);
+        controller.attached = false;
+        controller.stream = null;
+        controller.source = null;
+        controller.failed = false;
+      }
+      queueCriticalRecovery('loadedmetadata');
     };
 
     controller.volumeHandler = () => {
@@ -313,7 +335,7 @@
     }
 
     if (!ensureAttached(controller)) {
-      teardownController(controller, false);
+      teardownController(controller, false, state.context);
       return;
     }
 
@@ -322,11 +344,17 @@
   }
 
   function applyBypassState(controller) {
-    teardownController(controller, false);
+    teardownController(controller, false, state.context);
   }
 
   function ensureAttached(controller) {
-    if (controller.attached) return true;
+    if (controller.attached) {
+      const currentSrc = controller.media.currentSrc;
+      if (!currentSrc || currentSrc === controller.attachedSrc) {
+        return true;
+      }
+      teardownController(controller, false, state.context);
+    }
     if (!isMediaReadyForAttach(controller.media)) return false;
 
     const context = getAudioContext();
@@ -340,7 +368,7 @@
     controller.originalMuted = controller.media.muted;
 
     try {
-      const stream = controller.stream || captureMediaStream(controller.media);
+      const stream = captureMediaStream(controller.media);
       if (!stream) {
         throw new Error('captureStream unavailable for this media element.');
       }
@@ -354,13 +382,16 @@
         });
       }
 
-      const source = controller.source || context.createMediaStreamSource(stream);
+      const source = context.createMediaStreamSource(stream);
       const dryGain = context.createGain();
       const masterGain = context.createGain();
       const dattorroNode = new AudioWorkletNode(context, 'dattorro-reverb');
 
+      dattorroNode.port.postMessage({ type: 'reset' });
+      dattorroNode.port.postMessage({ type: 'setParams', params: computeDattorroParams(state.settings.reverbIntensity) });
+
       dryGain.gain.value = 1;
-      masterGain.gain.value = controller.media.volume;
+      masterGain.gain.value = 0;
 
       source.connect(dryGain);
       dryGain.connect(masterGain);
@@ -368,12 +399,15 @@
       dattorroNode.connect(masterGain);
       masterGain.connect(context.destination);
 
+      masterGain.gain.linearRampToValueAtTime(controller.media.volume, context.currentTime + 0.04);
+
       controller.stream = stream;
       controller.source = source;
       controller.dryGain = dryGain;
       controller.masterGain = masterGain;
       controller.dattorroNode = dattorroNode;
       controller.attached = true;
+      controller.attachedSrc = controller.media.currentSrc;
       controller.attachError = '';
       void resumeContext().then(() => {
         syncMediaController(controller);
@@ -481,10 +515,19 @@
     }
   }
 
-  function teardownController(controller, removeCompletely) {
+  function teardownController(controller, removeCompletely, context) {
     if (!controller) return;
 
     if (controller.attached) {
+      if (controller.masterGain) {
+        try {
+          const ctx = context || state.context;
+          if (ctx) {
+            controller.masterGain.gain.setValueAtTime(controller.masterGain.gain.value, ctx.currentTime);
+            controller.masterGain.gain.linearRampToValueAtTime(0, ctx.currentTime + 0.005);
+          }
+        } catch {}
+      }
       disconnectNode(controller.source);
       disconnectNode(controller.dryGain);
       disconnectNode(controller.masterGain);
@@ -496,6 +539,7 @@
     restoreMediaPlaybackState(controller);
 
     controller.attached = false;
+    controller.attachedSrc = '';
     controller.stream = null;
     controller.source = null;
     controller.dryGain = null;

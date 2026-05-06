@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Slowed Reverb Audio",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Slow YouTube audio and add built-in reverb locally.",
   "icons": {
     "16": "audio/icon-16.png",

@@ -34,6 +34,10 @@ class DattorroReverbProcessor extends AudioWorkletProcessor {
   }
 
   handleMessage(data) {
+    if (data.type === 'reset') {
+      this.init();
+      return;
+    }
     if (data.type === 'setParams') {
       const p = data.params;
       if (p.preDelay !== undefined) this.predelay = p.preDelay;

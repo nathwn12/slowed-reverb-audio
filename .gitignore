@@ -6,3 +6,7 @@
 *.json
 /.dev
 /.prod
+*.md
+*.zip
+/output/
+/user-data/

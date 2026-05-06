@@ -6,10 +6,8 @@
   }
 
   const {
-    getCurvedWetAmount,
     getDefaultSettings,
     isNeutral,
-    normalizeFlavor,
     normalizeSettings,
   } = globalThis.SlowedReverbShared;
 
@@ -23,11 +21,11 @@
     recoveryQueued: false,
     hookRefreshQueued: false,
     context: null,
-    presetBuffers: new Map(),
     listenersReady: false,
     lifecycleListenersReady: false,
     pageHookReady: false,
     lastError: '',
+    workletLoaded: false,
   };
 
   globalThis.__slowedReverbAudioContent = {
@@ -93,15 +91,10 @@
       const media = event.target;
       if (!(media instanceof HTMLMediaElement)) return;
       trackMedia(media);
+      syncMediaController(state.media.get(media));
       void resumeContext().then(() => {
-        const ctrl = state.media.get(media);
-        if (ctrl && ctrl.attached) {
-          teardownController(ctrl, false);
-          ctrl.attached = false;
-        }
         syncMediaController(state.media.get(media));
       });
-      syncMediaController(state.media.get(media));
     }, true);
 
     document.addEventListener('playing', (event) => {
@@ -250,11 +243,8 @@
       stream: null,
       source: null,
       dryGain: null,
-      wetInput: null,
-      convolver: null,
-      wetTone: null,
-      wetGain: null,
       masterGain: null,
+      dattorroNode: null,
       originalRate: media.playbackRate,
       originalPitch: readPitchState(media),
       originalMuted: media.muted,
@@ -293,6 +283,7 @@
     controller.volumeHandler = () => {
       if (!controller.attached || !controller.masterGain) return;
       controller.masterGain.gain.value = controller.media.volume;
+      setMediaPlaybackState(controller, state.settings.slow, false);
     };
 
     media.addEventListener('ratechange', controller.rateHandler);
@@ -338,6 +329,9 @@
     if (controller.attached) return true;
     if (!isMediaReadyForAttach(controller.media)) return false;
 
+    const context = getAudioContext();
+    if (!state.workletLoaded || context.state !== 'running') return false;
+
     controller.failed = false;
     controller.attachError = '';
 
@@ -346,7 +340,6 @@
     controller.originalMuted = controller.media.muted;
 
     try {
-      const context = getAudioContext();
       const stream = controller.stream || captureMediaStream(controller.media);
       if (!stream) {
         throw new Error('captureStream unavailable for this media element.');
@@ -363,37 +356,23 @@
 
       const source = controller.source || context.createMediaStreamSource(stream);
       const dryGain = context.createGain();
-      const wetInput = context.createGain();
-      const convolver = context.createConvolver();
-      const wetTone = context.createBiquadFilter();
-      const wetGain = context.createGain();
       const masterGain = context.createGain();
+      const dattorroNode = new AudioWorkletNode(context, 'dattorro-reverb');
 
       dryGain.gain.value = 1;
-      wetInput.gain.value = 0.9;
-      wetTone.type = 'lowpass';
-      wetTone.frequency.value = 5000;
-      wetTone.Q.value = 0.5;
-      wetGain.gain.value = 0;
       masterGain.gain.value = controller.media.volume;
 
       source.connect(dryGain);
       dryGain.connect(masterGain);
-      source.connect(wetInput);
-      wetInput.connect(convolver);
-      convolver.connect(wetTone);
-      wetTone.connect(wetGain);
-      wetGain.connect(masterGain);
+      source.connect(dattorroNode);
+      dattorroNode.connect(masterGain);
       masterGain.connect(context.destination);
 
       controller.stream = stream;
       controller.source = source;
       controller.dryGain = dryGain;
-      controller.wetInput = wetInput;
-      controller.convolver = convolver;
-      controller.wetTone = wetTone;
-      controller.wetGain = wetGain;
       controller.masterGain = masterGain;
+      controller.dattorroNode = dattorroNode;
       controller.attached = true;
       controller.attachError = '';
       void resumeContext().then(() => {
@@ -412,6 +391,7 @@
     if (!state.context) {
       const AudioContextCtor = window.AudioContext || window.webkitAudioContext;
       state.context = new AudioContextCtor();
+      void loadWorklet(state.context);
     }
     return state.context;
   }
@@ -447,78 +427,38 @@
     );
   }
 
-  function shouldMuteNativeElement(controller) {
-    if (!state.context || state.context.state !== 'running') return false;
-    if (!controller || !controller.stream) return false;
+  async function loadWorklet(context) {
     try {
-      const tracks = controller.stream.getAudioTracks();
-      return tracks.length > 0 && tracks.some(t => t.enabled);
-    } catch {
-      return false;
+      const url = chrome.runtime.getURL('dattorro-worklet.js');
+      await context.audioWorklet.addModule(url);
+      state.workletLoaded = true;
+      syncAllMedia();
+    } catch (e) {
+      state.lastError = 'Worklet: ' + (e.message || e);
     }
+  }
+
+  function computeDattorroParams(intensity) {
+    const i = Math.max(0, Math.min(1, intensity));
+    if (i <= 0) {
+      return { wetGain: 0, decay: 0, damping: 1, preDelay: 0 };
+    }
+    return {
+      preDelay: 0.3 + i * 0.5,
+      preFilter: 0.7 + i * 0.2,
+      inputDiff1: 0.75,
+      inputDiff2: 0.625,
+      decayDiff1: 0.6 + i * 0.2,
+      decay: Math.pow(i, 1.3) * 0.85,
+      damping: 0.5 + Math.pow(i, 0.6) * 0.4,
+      wetGain: Math.pow(i, 1.5) * 0.7,
+    };
   }
 
   function updateWetChain(controller) {
-    const flavor = normalizeFlavor(state.settings.reverbFlavor);
-    const wetAmount = getCurvedWetAmount(state.settings.reverbIntensity, flavor);
-
-    if (!controller.convolver || !controller.wetTone || !controller.wetGain) return;
-
-    if (flavor === 'none' || wetAmount <= 0) {
-      controller.wetGain.gain.value = 0;
-      return;
-    }
-
-    controller.convolver.buffer = getPresetBuffer(flavor);
-
-    const toneByFlavor = {
-      moon: { frequency: 6200, q: 0.7 },
-      mars: { frequency: 3100, q: 1.2 },
-      jupiter: { frequency: 7600, q: 0.45 },
-      pluto: { frequency: 2300, q: 1.5 },
-    };
-
-    const tone = toneByFlavor[flavor] || toneByFlavor.moon;
-    controller.wetTone.frequency.value = tone.frequency;
-    controller.wetTone.Q.value = tone.q;
-    controller.wetGain.gain.value = wetAmount;
-  }
-
-  function getPresetBuffer(flavor) {
-    if (state.presetBuffers.has(flavor)) {
-      return state.presetBuffers.get(flavor);
-    }
-
-    const context = getAudioContext();
-    const recipeByFlavor = {
-      moon: { seconds: 2.7, decay: 2.4, brightness: 0.72, early: 0.2, late: 0.85 },
-      mars: { seconds: 1.3, decay: 1.8, brightness: 0.38, early: 0.45, late: 0.35 },
-      jupiter: { seconds: 3.8, decay: 2.9, brightness: 0.82, early: 0.18, late: 1 },
-      pluto: { seconds: 2.2, decay: 2.7, brightness: 0.2, early: 0.12, late: 0.62 },
-    };
-    const recipe = recipeByFlavor[flavor] || recipeByFlavor.moon;
-    const sampleRate = context.sampleRate;
-    const length = Math.max(1, Math.floor(sampleRate * recipe.seconds));
-    const buffer = context.createBuffer(2, length, sampleRate);
-    const left = buffer.getChannelData(0);
-    const right = buffer.getChannelData(1);
-    let seed = 1 + flavor.length * 97;
-
-    for (let index = 0; index < length; index += 1) {
-      const progress = index / length;
-      const envelope = Math.pow(1 - progress, recipe.decay);
-      const stereoSkew = 0.92 + progress * 0.08;
-      seed = (seed * 16807) % 2147483647;
-      const randA = (seed / 2147483647) * 2 - 1;
-      seed = (seed * 16807) % 2147483647;
-      const randB = (seed / 2147483647) * 2 - 1;
-      const tint = recipe.brightness + (1 - progress) * recipe.early + progress * recipe.late;
-      left[index] = randA * envelope * tint;
-      right[index] = randB * envelope * tint * stereoSkew;
-    }
-
-    state.presetBuffers.set(flavor, buffer);
-    return buffer;
+    if (!controller.dattorroNode) return;
+    const params = computeDattorroParams(state.settings.reverbIntensity);
+    controller.dattorroNode.port.postMessage({ type: 'setParams', params });
   }
 
   function setMediaPlaybackState(controller, rate, preservePitch) {
@@ -526,14 +466,14 @@
     controller.internalRateWrite = true;
 
     try {
-      if (rate >= 0.999) {
+      if (Math.abs(rate - 1) < 0.001) {
         applyPitchState(media, controller.originalPitch);
         media.playbackRate = controller.originalRate;
       } else {
         setPreservesPitch(media, preservePitch);
         media.playbackRate = rate;
       }
-      media.muted = shouldMuteNativeElement(controller);
+      media.muted = controller.attached;
     } finally {
       setTimeout(() => {
         controller.internalRateWrite = false;
@@ -547,11 +487,10 @@
     if (controller.attached) {
       disconnectNode(controller.source);
       disconnectNode(controller.dryGain);
-      disconnectNode(controller.wetInput);
-      disconnectNode(controller.convolver);
-      disconnectNode(controller.wetTone);
-      disconnectNode(controller.wetGain);
       disconnectNode(controller.masterGain);
+      if (controller.dattorroNode) {
+        try { controller.dattorroNode.disconnect(); } catch {}
+      }
     }
 
     restoreMediaPlaybackState(controller);
@@ -560,11 +499,8 @@
     controller.stream = null;
     controller.source = null;
     controller.dryGain = null;
-    controller.wetInput = null;
-    controller.convolver = null;
-    controller.wetTone = null;
-    controller.wetGain = null;
     controller.masterGain = null;
+    controller.dattorroNode = null;
 
     if (removeCompletely) {
       if (controller.rateHandler) {

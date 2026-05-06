@@ -29,6 +29,8 @@ let popupState = {
 };
 let pollTimer = null;
 let lastApplyTime = 0;
+let applying = false;
+let pendingSettings = null;
 
 void init();
 
@@ -125,7 +127,24 @@ function throttledApply(settings) {
   const now = Date.now();
   if (now - lastApplyTime >= APPLY_THROTTLE_MS) {
     lastApplyTime = now;
-    void applySettings(settings);
+    pendingSettings = settings;
+    if (!applying) {
+      applying = true;
+      void flushApply();
+    }
+  }
+}
+
+async function flushApply() {
+  try {
+    while (pendingSettings) {
+      const settings = pendingSettings;
+      pendingSettings = null;
+      await applySettings(settings);
+    }
+    await refreshLiveStatus();
+  } finally {
+    applying = false;
   }
 }
 

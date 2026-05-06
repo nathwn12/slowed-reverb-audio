@@ -6,9 +6,9 @@ const {
   normalizeSettings,
 } = self.SlowedReverbShared;
 
-const TAB_BYPASS_KEY = 'tabBypassById';
-const SITE_SETTINGS_KEY = 'siteSettings';
-const TAB_SESSION_KEY = 'tabSessionById';
+const TAB_BYPASS_PREFIX = 'tabBypass_';
+const SITE_SETTINGS_PREFIX = 'siteSettings_';
+const TAB_SESSION_PREFIX = 'tabSession_';
 const REMEMBER_KEY = 'rememberEnabled';
 
 function getEligibleTab(tabId) {
@@ -36,50 +36,37 @@ async function injectMainWorldHook(tabId) {
   }
 }
 
-async function getStoredBypassMap() {
-  const stored = await chrome.storage.session.get({ [TAB_BYPASS_KEY]: {} });
-  const byTabId = stored[TAB_BYPASS_KEY];
-  return byTabId && typeof byTabId === 'object' ? byTabId : {};
-}
-
 async function getTabBypass(tabId) {
-  const byTabId = await getStoredBypassMap();
-  return Boolean(byTabId[String(tabId)]);
+  const key = TAB_BYPASS_PREFIX + String(tabId);
+  const stored = await chrome.storage.session.get({ [key]: false });
+  return Boolean(stored[key]);
 }
 
 async function setTabBypass(tabId, bypass) {
-  const byTabId = await getStoredBypassMap();
-  const key = String(tabId);
-
+  const key = TAB_BYPASS_PREFIX + String(tabId);
   if (bypass) {
-    byTabId[key] = true;
+    await chrome.storage.session.set({ [key]: true });
   } else {
-    delete byTabId[key];
+    await chrome.storage.session.remove(key);
   }
-
-  await chrome.storage.session.set({ [TAB_BYPASS_KEY]: byTabId });
 }
 
 async function clearTabBypass(tabId) {
-  const byTabId = await getStoredBypassMap();
-  const key = String(tabId);
-
-  if (!(key in byTabId)) return;
-
-  delete byTabId[key];
-  await chrome.storage.session.set({ [TAB_BYPASS_KEY]: byTabId });
+  const key = TAB_BYPASS_PREFIX + String(tabId);
+  await chrome.storage.session.remove(key);
 }
 
-async function getStoredSiteSettings() {
-  const stored = await chrome.storage.local.get({ [SITE_SETTINGS_KEY]: {} });
-  return stored[SITE_SETTINGS_KEY] || {};
+async function getStoredSiteSettings(siteKey) {
+  const key = SITE_SETTINGS_PREFIX + siteKey;
+  const stored = await chrome.storage.local.get({ [key]: null });
+  return stored[key];
 }
 
 async function setStoredSiteSettings(siteKey, settings) {
-  const all = await getStoredSiteSettings();
-  all[siteKey] = normalizeSettings(settings);
-  await chrome.storage.local.set({ [SITE_SETTINGS_KEY]: all });
-  return all[siteKey];
+  const key = SITE_SETTINGS_PREFIX + siteKey;
+  const normalized = normalizeSettings(settings);
+  await chrome.storage.local.set({ [key]: normalized });
+  return normalized;
 }
 
 async function getRememberEnabled() {
@@ -92,23 +79,19 @@ async function setRememberEnabled(value) {
 }
 
 async function getTabSession(tabId) {
-  const stored = await chrome.storage.session.get({ [TAB_SESSION_KEY]: {} });
-  const byTabId = stored[TAB_SESSION_KEY];
-  return byTabId && typeof byTabId === 'object' ? (byTabId[String(tabId)] || null) : null;
+  const key = TAB_SESSION_PREFIX + String(tabId);
+  const stored = await chrome.storage.session.get({ [key]: null });
+  return stored[key];
 }
 
 async function setTabSession(tabId, settings) {
-  const stored = await chrome.storage.session.get({ [TAB_SESSION_KEY]: {} });
-  const byTabId = stored[TAB_SESSION_KEY] || {};
-  byTabId[String(tabId)] = normalizeSettings(settings);
-  await chrome.storage.session.set({ [TAB_SESSION_KEY]: byTabId });
+  const key = TAB_SESSION_PREFIX + String(tabId);
+  await chrome.storage.session.set({ [key]: normalizeSettings(settings) });
 }
 
 async function clearTabSession(tabId) {
-  const stored = await chrome.storage.session.get({ [TAB_SESSION_KEY]: {} });
-  const byTabId = stored[TAB_SESSION_KEY] || {};
-  delete byTabId[String(tabId)];
-  await chrome.storage.session.set({ [TAB_SESSION_KEY]: byTabId });
+  const key = TAB_SESSION_PREFIX + String(tabId);
+  await chrome.storage.session.remove(key);
 }
 
 async function resolveSettingsForTab(tabId) {
@@ -122,8 +105,8 @@ async function resolveSettingsForTab(tabId) {
   }
 
   if (eligible && siteKey && (await getRememberEnabled())) {
-    const all = await getStoredSiteSettings();
-    return { eligible, siteKey, settings: normalizeSettings(all[siteKey]) };
+    const siteSettings = await getStoredSiteSettings(siteKey);
+    return { eligible, siteKey, settings: normalizeSettings(siteSettings) };
   }
 
   return { eligible, siteKey, settings: normalizeSettings(null) };
@@ -181,6 +164,23 @@ async function rehydrateAllTabs() {
   }
 }
 
+async function migrateOldStorageFormat() {
+  const oldKey = 'siteSettings';
+  const stored = await chrome.storage.local.get({ [oldKey]: {} });
+  const oldData = stored[oldKey];
+  if (oldData && typeof oldData === 'object') {
+    const entries = Object.entries(oldData);
+    if (entries.length > 0) {
+      const writes = {};
+      for (const [siteKey, settings] of entries) {
+        writes[SITE_SETTINGS_PREFIX + siteKey] = normalizeSettings(settings);
+      }
+      await chrome.storage.local.set(writes);
+      await chrome.storage.local.remove(oldKey);
+    }
+  }
+}
+
 chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
   if (!tabId || (changeInfo.status !== 'complete' && typeof changeInfo.url !== 'string')) {
     return;
@@ -199,8 +199,16 @@ chrome.runtime.onStartup.addListener(() => {
 });
 
 chrome.runtime.onInstalled.addListener(() => {
+  void migrateOldStorageFormat();
   void rehydrateAllTabs();
 });
+
+let writeQueue = Promise.resolve();
+
+async function serializedWrite(fn) {
+  writeQueue = writeQueue.then(fn, fn);
+  return writeQueue;
+}
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (!message?.type) return false;
@@ -221,13 +229,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         const rememberEnabled = await getRememberEnabled();
         const persist = message.persist !== false && rememberEnabled;
 
-        if (persist && message.siteKey) {
-          await setStoredSiteSettings(message.siteKey, settings);
-        }
-        await setTabSession(tabId, settings);
+        return serializedWrite(async () => {
+          if (persist && message.siteKey) {
+            await setStoredSiteSettings(message.siteKey, settings);
+          }
+          await setTabSession(tabId, settings);
 
-        const push = await pushTabState(tabId);
-        return { ok: true, settings, pushed: push.ok };
+          const push = await pushTabState(tabId);
+          return { ok: true, settings, pushed: push.ok };
+        });
       }
       case 'SET_REMEMBER': {
         await setRememberEnabled(Boolean(message.value));

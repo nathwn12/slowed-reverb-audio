@@ -466,7 +466,7 @@
     controller.internalRateWrite = true;
 
     try {
-      if (rate >= 0.999) {
+      if (Math.abs(rate - 1) < 0.001) {
         applyPitchState(media, controller.originalPitch);
         media.playbackRate = controller.originalRate;
       } else {

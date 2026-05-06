@@ -20,7 +20,7 @@
   }
 
   function clampSlow(value) {
-    return Math.round(clamp(value, 0.6, 1) * 100) / 100;
+    return Math.round(clamp(value, 0.7, 1.3) * 100) / 100;
   }
 
   function clampIntensity(value) {

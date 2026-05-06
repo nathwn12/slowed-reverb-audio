@@ -1,4 +1,5 @@
 const pageTitleEl = document.getElementById('page-title');
+const resetBtnEl = document.getElementById('reset-btn');
 const statusDotEl = document.getElementById('status-dot');
 const statusTextEl = document.getElementById('status-text');
 const powerToggleEl = document.getElementById('power-toggle');
@@ -11,8 +12,10 @@ const intensityReadoutEl = document.getElementById('intensity-readout');
 const {
   formatPercent,
   formatRate,
+  getDefaultSettings,
   normalizeSettings,
 } = globalThis.SlowedReverbShared;
+const defaultSettings = getDefaultSettings();
 
 const APPLY_THROTTLE_MS = 40;
 
@@ -47,6 +50,11 @@ intensitySliderEl.addEventListener('input', () => {
   const settings = { ...popupState.settings, reverbIntensity: Number(intensitySliderEl.value) };
   applySettingsToUi(settings);
   throttledApply(settings);
+});
+
+resetBtnEl.addEventListener('click', () => {
+  applySettingsToUi(defaultSettings);
+  void applySettings(defaultSettings);
 });
 
 async function init() {

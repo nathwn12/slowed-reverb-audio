@@ -10,7 +10,7 @@
   const SUPPORTED_HOSTS = new Set(['youtube.com', 'www.youtube.com', 'music.youtube.com']);
   const DEFAULT_SETTINGS = {
     slow: 1,
-    reverbIntensity: 0.34,
+    reverbIntensity: 0,
   };
 
   function clamp(value, min, max) {

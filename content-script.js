@@ -91,15 +91,10 @@
       const media = event.target;
       if (!(media instanceof HTMLMediaElement)) return;
       trackMedia(media);
+      syncMediaController(state.media.get(media));
       void resumeContext().then(() => {
-        const ctrl = state.media.get(media);
-        if (ctrl && ctrl.attached) {
-          teardownController(ctrl, false);
-          ctrl.attached = false;
-        }
         syncMediaController(state.media.get(media));
       });
-      syncMediaController(state.media.get(media));
     }, true);
 
     document.addEventListener('playing', (event) => {
@@ -288,6 +283,7 @@
     controller.volumeHandler = () => {
       if (!controller.attached || !controller.masterGain) return;
       controller.masterGain.gain.value = controller.media.volume;
+      setMediaPlaybackState(controller, state.settings.slow, false);
     };
 
     media.addEventListener('ratechange', controller.rateHandler);
@@ -334,7 +330,7 @@
     if (!isMediaReadyForAttach(controller.media)) return false;
 
     const context = getAudioContext();
-    if (!state.workletLoaded) return false;
+    if (!state.workletLoaded || context.state !== 'running') return false;
 
     controller.failed = false;
     controller.attachError = '';
@@ -431,17 +427,6 @@
     );
   }
 
-  function shouldMuteNativeElement(controller) {
-    if (!state.context || state.context.state !== 'running') return false;
-    if (!controller || !controller.stream) return false;
-    try {
-      const tracks = controller.stream.getAudioTracks();
-      return tracks.length > 0 && tracks.some(t => t.enabled);
-    } catch {
-      return false;
-    }
-  }
-
   async function loadWorklet(context) {
     try {
       const url = chrome.runtime.getURL('dattorro-worklet.js');
@@ -488,7 +473,7 @@
         setPreservesPitch(media, preservePitch);
         media.playbackRate = rate;
       }
-      media.muted = shouldMuteNativeElement(controller);
+      media.muted = controller.attached;
     } finally {
       setTimeout(() => {
         controller.internalRateWrite = false;

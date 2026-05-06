@@ -20,16 +20,9 @@ function isEligibleTab(tab) {
   return Boolean(tab?.id) && isSupportedUrl(tab.url);
 }
 
-async function injectTabScripts(tabId) {
+async function injectMainWorldHook(tabId) {
   const tab = await getEligibleTab(tabId);
   if (!isEligibleTab(tab)) return { ok: false, error: 'unsupported' };
-
-  try {
-    await chrome.scripting.executeScript({
-      target: { tabId },
-      files: ['shared.js', 'content-script.js'],
-    });
-  } catch {}
 
   try {
     await chrome.scripting.executeScript({
@@ -156,7 +149,6 @@ async function pushTabState(tabId) {
   const tab = await getEligibleTab(tabId);
   if (!isEligibleTab(tab)) return { ok: false, error: 'unsupported' };
 
-  await injectTabScripts(tabId);
   const payload = await buildTabState(tabId);
 
   try {
@@ -167,7 +159,17 @@ async function pushTabState(tabId) {
     });
     return { ok: true };
   } catch {
-    return { ok: false, error: 'unreachable' };
+    await injectMainWorldHook(tabId);
+    try {
+      await chrome.tabs.sendMessage(tabId, {
+        type: 'APPLY_TAB_STATE',
+        bypass: payload.bypass,
+        settings: payload.settings,
+      });
+      return { ok: true };
+    } catch {
+      return { ok: false, error: 'unreachable' };
+    }
   }
 }
 
@@ -207,7 +209,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     switch (message.type) {
       case 'GET_POPUP_STATE': {
         const tabId = Number(message.tabId);
-        await injectTabScripts(tabId);
+        await injectMainWorldHook(tabId);
         return buildTabState(message.tabId);
       }
       case 'GET_TAB_RUNTIME_STATE': {
@@ -247,7 +249,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       case 'ENSURE_TAB_HOOKS': {
         const tabId = Number(message.tabId || sender.tab?.id);
         if (!Number.isInteger(tabId) || tabId < 0) throw new Error('Missing tabId.');
-        return injectTabScripts(tabId);
+        return injectMainWorldHook(tabId);
       }
       default:
         return { ok: false, error: 'unknown_message' };

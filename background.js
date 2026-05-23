@@ -175,23 +175,43 @@ async function pushTabState(tabId) {
 
 async function rehydrateAllTabs() {
   const tabs = await chrome.tabs.query({});
-  for (const tab of tabs) {
-    if (!isEligibleTab(tab)) continue;
-    await pushTabState(tab.id);
+  const eligible = tabs.filter(t => isEligibleTab(t));
+  const CONCURRENCY = 5;
+  let i = 0;
+
+  const next = () => {
+    if (i >= eligible.length) return Promise.resolve();
+    const tab = eligible[i++];
+    return pushTabState(tab.id).then(next, next);
+  };
+
+  const workers = [];
+  for (let w = 0; w < Math.min(CONCURRENCY, eligible.length); w++) {
+    workers.push(next());
   }
+  await Promise.all(workers);
 }
+
+const pendingUpdates = new Map();
 
 chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
   if (!tabId || (changeInfo.status !== 'complete' && typeof changeInfo.url !== 'string')) {
     return;
   }
 
-  void pushTabState(tabId);
+  if (pendingUpdates.has(tabId)) return;
+  pendingUpdates.set(tabId, true);
+
+  pushTabState(tabId).finally(() => {
+    pendingUpdates.delete(tabId);
+  });
 });
 
 chrome.tabs.onRemoved.addListener((tabId) => {
-  void clearTabBypass(tabId);
-  void clearTabSession(tabId);
+  Promise.all([
+    clearTabBypass(tabId),
+    clearTabSession(tabId),
+  ]).catch(() => {});
 });
 
 chrome.runtime.onStartup.addListener(() => {

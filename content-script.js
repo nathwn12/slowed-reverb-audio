@@ -37,6 +37,10 @@
 
   void bootstrap(true);
 
+  window.addEventListener('beforeunload', () => {
+    closeAudioContext();
+  });
+
   async function bootstrap(ensureHooks) {
     ensureGlobalListeners();
     ensureLifecycleListeners();
@@ -155,14 +159,14 @@
   function ensureObserver() {
     if (state.observer) return;
 
-    state.observer = new MutationObserver((mutations) => {
-      for (const mutation of mutations) {
-        if (mutation.type !== 'childList') continue;
-        if (mutation.addedNodes.length || mutation.removedNodes.length) {
-          queueScan();
-          return;
-        }
-      }
+    let observerTimer = null;
+
+    state.observer = new MutationObserver(() => {
+      if (observerTimer) return;
+      observerTimer = setTimeout(() => {
+        observerTimer = null;
+        queueScan();
+      }, 50);
     });
 
     const root = document.documentElement || document;
@@ -187,19 +191,20 @@
     });
   }
 
+  let recoveryTimer = null;
+
   function queueRecovery(reason) {
-    if (state.recoveryQueued) return;
-    state.recoveryQueued = true;
+    if (recoveryTimer) return;
 
     if (!state.pageHookReady || reason === 'bootstrap' || reason === 'missing-hook') {
       void requestHookRefresh(reason);
     }
 
-    queueMicrotask(() => {
-      state.recoveryQueued = false;
+    recoveryTimer = setTimeout(() => {
+      recoveryTimer = null;
       queueScan();
       syncAllMedia();
-    });
+    }, 50);
   }
 
   function queueCriticalRecovery(reason) {
@@ -430,6 +435,14 @@
     return state.context;
   }
 
+  function closeAudioContext() {
+    if (state.context && state.context.state !== 'closed') {
+      try { state.context.close(); } catch {}
+    }
+    state.context = null;
+    state.workletLoaded = false;
+  }
+
   async function resumeContext() {
     if (!state.context || state.context.state === 'running') return;
     try {
@@ -509,9 +522,9 @@
       }
       media.muted = controller.attached;
     } finally {
-      setTimeout(() => {
+      queueMicrotask(() => {
         controller.internalRateWrite = false;
-      }, 0);
+      });
     }
   }
 
@@ -573,13 +586,13 @@
     try {
       applyPitchState(media, controller.originalPitch);
       media.playbackRate = controller.originalRate;
-      media.muted = controller.originalMuted;
+      media.muted = false;
     } catch {
       // Ignore restore failures.
     } finally {
-      setTimeout(() => {
+      queueMicrotask(() => {
         controller.internalRateWrite = false;
-      }, 0);
+      });
     }
   }
 

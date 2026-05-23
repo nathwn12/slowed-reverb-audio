@@ -162,11 +162,11 @@ class DattorroReverbProcessor extends AudioWorkletProcessor {
 
       if ((this.t & 0x7ff) === 0) {
         if (this.modCount < 16) {
-          this.modDelay1.offset--;
-          this.modDelay2.offset--;
+          this.modDelay1.offset = Math.max(0, this.modDelay1.offset - 1);
+          this.modDelay2.offset = Math.max(0, this.modDelay2.offset - 1);
         } else {
-          this.modDelay1.offset++;
-          this.modDelay2.offset++;
+          this.modDelay1.offset = Math.min(this.modDelay1.buf.length - this.modDelay1.mask, this.modDelay1.offset + 1);
+          this.modDelay2.offset = Math.min(this.modDelay2.buf.length - this.modDelay2.mask, this.modDelay2.offset + 1);
         }
         this.modCount = (this.modCount + 1) % 32;
       }

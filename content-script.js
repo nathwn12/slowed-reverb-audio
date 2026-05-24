@@ -37,10 +37,6 @@
 
   void bootstrap(true);
 
-  window.addEventListener('beforeunload', () => {
-    closeAudioContext();
-  });
-
   async function bootstrap(ensureHooks) {
     ensureGlobalListeners();
     ensureLifecycleListeners();
@@ -85,6 +81,12 @@
 
       if (message?.type === 'GET_LIVE_STATUS') {
         sendResponse(getLiveStatus());
+        return false;
+      }
+
+      if (message?.type === 'TOGGLE_CHANGED') {
+        applyRuntimeState({ bypass: !message.enabled });
+        sendResponse({ ok: true });
         return false;
       }
 
@@ -173,11 +175,13 @@
     state.observer.observe(root, { childList: true, subtree: true });
   }
 
-  function applyRuntimeState(runtime) {
-    state.eligible = Boolean(runtime?.eligible !== false);
-    state.bypass = Boolean(runtime?.bypass);
-    state.settings = normalizeSettings(runtime?.settings);
-    state.lastError = '';
+function applyRuntimeState(runtime) {
+  state.eligible = Boolean(runtime?.eligible !== false);
+  state.bypass = Boolean(runtime?.bypass);
+  if (runtime?.settings !== undefined) {
+    state.settings = normalizeSettings(runtime.settings);
+  }
+  state.lastError = '';
     syncAllMedia();
   }
 
@@ -192,6 +196,27 @@
   }
 
   let recoveryTimer = null;
+  let rateWatchdogTimer = null;
+
+  function startRateWatchdog() {
+    stopRateWatchdog();
+    rateWatchdogTimer = setInterval(() => {
+      if (!state.eligible || state.bypass) return;
+      for (const controller of state.media.values()) {
+        if (!controller.attached || controller.failed) continue;
+        if (Math.abs(controller.media.playbackRate - state.settings.slow) > 0.02) {
+          setMediaPlaybackState(controller, state.settings.slow, false);
+        }
+      }
+    }, 2000);
+  }
+
+  function stopRateWatchdog() {
+    if (rateWatchdogTimer !== null) {
+      clearInterval(rateWatchdogTimer);
+      rateWatchdogTimer = null;
+    }
+  }
 
   function queueRecovery(reason) {
     if (recoveryTimer) return;
@@ -325,13 +350,18 @@
     return state.eligible && !state.bypass && controller && controller.attached && !controller.failed;
   }
 
-  function syncAllMedia() {
+  function syncAllMedia(retryCount = 0) {
     for (const controller of state.media.values()) {
-      syncMediaController(controller);
+      syncMediaController(controller, retryCount);
+    }
+    if (state.eligible && !state.bypass && rateWatchdogTimer === null) {
+      startRateWatchdog();
+    } else if ((!state.eligible || state.bypass) && rateWatchdogTimer !== null) {
+      stopRateWatchdog();
     }
   }
 
-  function syncMediaController(controller) {
+  function syncMediaController(controller, retryCount = 0) {
     if (!controller || !controller.media.isConnected) return;
 
     if (!state.eligible || state.bypass) {
@@ -340,12 +370,17 @@
     }
 
     if (!ensureAttached(controller)) {
-      teardownController(controller, false, state.context);
+      if (retryCount < 5) {
+        setTimeout(() => syncMediaController(controller, retryCount + 1), 200 * (retryCount + 1));
+      } else {
+        teardownController(controller, false, state.context);
+      }
       return;
     }
 
     updateWetChain(controller);
-    setMediaPlaybackState(controller, state.settings.slow, false);
+    const cleanSlow = parseFloat(state.settings.slow.toFixed(2));
+    setMediaPlaybackState(controller, cleanSlow, false);
   }
 
   function applyBypassState(controller) {
@@ -368,10 +403,6 @@
     controller.failed = false;
     controller.attachError = '';
 
-    controller.originalRate = controller.media.playbackRate;
-    controller.originalPitch = readPitchState(controller.media);
-    controller.originalMuted = controller.media.muted;
-
     try {
       const stream = captureMediaStream(controller.media);
       if (!stream) {
@@ -392,10 +423,11 @@
       const masterGain = context.createGain();
       const dattorroNode = new AudioWorkletNode(context, 'dattorro-reverb');
 
+      const initialParams = computeDattorroParams(state.settings.reverbIntensity);
       dattorroNode.port.postMessage({ type: 'reset' });
-      dattorroNode.port.postMessage({ type: 'setParams', params: computeDattorroParams(state.settings.reverbIntensity) });
+      dattorroNode.port.postMessage({ type: 'setParams', params: initialParams });
 
-      dryGain.gain.value = 1;
+      dryGain.gain.value = 1 - initialParams.wetGain;
       masterGain.gain.value = 0;
 
       source.connect(dryGain);
@@ -404,7 +436,7 @@
       dattorroNode.connect(masterGain);
       masterGain.connect(context.destination);
 
-      masterGain.gain.linearRampToValueAtTime(controller.media.volume, context.currentTime + 0.04);
+      masterGain.gain.value = controller.media.volume;
 
       controller.stream = stream;
       controller.source = source;
@@ -415,7 +447,7 @@
       controller.attachedSrc = controller.media.currentSrc;
       controller.attachError = '';
       void resumeContext().then(() => {
-        syncMediaController(controller);
+        syncMediaController(controller, 0);
       });
       return true;
     } catch (error) {
@@ -433,14 +465,6 @@
       void loadWorklet(state.context);
     }
     return state.context;
-  }
-
-  function closeAudioContext() {
-    if (state.context && state.context.state !== 'closed') {
-      try { state.context.close(); } catch {}
-    }
-    state.context = null;
-    state.workletLoaded = false;
   }
 
   async function resumeContext() {
@@ -506,6 +530,9 @@
     if (!controller.dattorroNode) return;
     const params = computeDattorroParams(state.settings.reverbIntensity);
     controller.dattorroNode.port.postMessage({ type: 'setParams', params });
+    if (controller.dryGain) {
+      controller.dryGain.gain.value = 1 - params.wetGain;
+    }
   }
 
   function setMediaPlaybackState(controller, rate, preservePitch) {
@@ -518,9 +545,14 @@
         media.playbackRate = controller.originalRate;
       } else {
         setPreservesPitch(media, preservePitch);
-        media.playbackRate = rate;
+        media.playbackRate = parseFloat(rate.toFixed(2));
       }
       media.muted = controller.attached;
+      if (controller.originalRate === undefined) {
+        controller.originalRate = media.playbackRate;
+        controller.originalPitch = readPitchState(media);
+        controller.originalMuted = media.muted;
+      }
     } finally {
       queueMicrotask(() => {
         controller.internalRateWrite = false;
@@ -532,15 +564,7 @@
     if (!controller) return;
 
     if (controller.attached) {
-      if (controller.masterGain) {
-        try {
-          const ctx = context || state.context;
-          if (ctx) {
-            controller.masterGain.gain.setValueAtTime(controller.masterGain.gain.value, ctx.currentTime);
-            controller.masterGain.gain.linearRampToValueAtTime(0, ctx.currentTime + 0.005);
-          }
-        } catch {}
-      }
+
       disconnectNode(controller.source);
       disconnectNode(controller.dryGain);
       disconnectNode(controller.masterGain);

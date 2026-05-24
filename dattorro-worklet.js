@@ -144,7 +144,7 @@ class DattorroReverbProcessor extends AudioWorkletProcessor {
       this.preBuf[this.preIdx] = x;
       this.preIdx = (this.preIdx + 1) % this.preBuf.length;
       const pdSamps = Math.floor(this.predelay * sr * 0.1);
-      let rdIdx = (this.preIdx - pdSamps + this.preBuf.length) % this.preBuf.length;
+      const rdIdx = (this.preIdx - pdSamps + this.preBuf.length) % this.preBuf.length;
       x = this.preBuf[rdIdx];
 
       this.preFilter += (x - this.preFilter) * this.preFilterAmt;
@@ -192,14 +192,14 @@ class DattorroReverbProcessor extends AudioWorkletProcessor {
       this.postDampDL[1].write(this.t, x2);
 
       const lpfCoeff = 0.5;
-      let wL = (this.preDampDL[1].readTap(this.t, 'out1')
+      const wL = (this.preDampDL[1].readTap(this.t, 'out1')
             + this.preDampDL[1].readTap(this.t, 'out2')
             - this.decayDiff2[1].readTap(this.t, 'out2')
             + this.postDampDL[1].readTap(this.t, 'out2')
             - this.preDampDL[0].readTap(this.t, 'out3')
             - this.decayDiff2[0].readTap(this.t, 'out1')
             + this.postDampDL[0].readTap(this.t, 'out1'));
-      let wR = (this.preDampDL[0].readTap(this.t, 'out1')
+      const wR = (this.preDampDL[0].readTap(this.t, 'out1')
             + this.preDampDL[0].readTap(this.t, 'out2')
             - this.decayDiff2[0].readTap(this.t, 'out2')
             + this.postDampDL[0].readTap(this.t, 'out2')

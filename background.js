@@ -1,4 +1,4 @@
-importScripts('shared.js');
+try { importScripts('shared.js'); } catch {} // Firefox uses background.scripts instead
 
 const {
   extractHostname,
@@ -9,7 +9,9 @@ const {
 const TAB_BYPASS_KEY = 'tabBypassById';
 const SITE_SETTINGS_KEY = 'siteSettings';
 const TAB_SESSION_KEY = 'tabSessionById';
-const REMEMBER_KEY = 'rememberEnabled';
+
+const tabBypassById = new Map();
+const tabSessionById = new Map();
 
 function getEligibleTab(tabId) {
   if (tabId == null) return null;
@@ -20,26 +22,32 @@ function isEligibleTab(tab) {
   return Boolean(tab?.id) && isSupportedUrl(tab.url);
 }
 
+async function injectMainWorldScript(tabId, file) {
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      files: [file],
+      world: 'MAIN',
+    });
+  } catch {
+    await chrome.tabs.executeScript(tabId, { file });
+  }
+}
+
 async function injectMainWorldHook(tabId) {
   const tab = await getEligibleTab(tabId);
   if (!isEligibleTab(tab)) return { ok: false, error: 'unsupported' };
 
   try {
-    await chrome.scripting.executeScript({
-      target: { tabId },
-      files: ['page-hook.js'],
-      world: 'MAIN',
-    });
+    await injectMainWorldScript(tabId, 'page-hook.js');
     return { ok: true };
   } catch (error) {
     return { ok: false, error: String(error && error.message ? error.message : error) };
   }
 }
 
-async function getStoredBypassMap() {
-  const stored = await chrome.storage.session.get({ [TAB_BYPASS_KEY]: {} });
-  const byTabId = stored[TAB_BYPASS_KEY];
-  return byTabId && typeof byTabId === 'object' ? byTabId : {};
+function getStoredBypassMap() {
+  return Object.fromEntries(tabBypassById);
 }
 
 async function getTabBypass(tabId) {
@@ -48,26 +56,16 @@ async function getTabBypass(tabId) {
 }
 
 async function setTabBypass(tabId, bypass) {
-  const byTabId = await getStoredBypassMap();
-  const key = String(tabId);
-
   if (bypass) {
-    byTabId[key] = true;
+    tabBypassById.set(tabId, true);
   } else {
-    delete byTabId[key];
+    tabBypassById.delete(tabId);
   }
-
-  await chrome.storage.session.set({ [TAB_BYPASS_KEY]: byTabId });
 }
 
 async function clearTabBypass(tabId) {
-  const byTabId = await getStoredBypassMap();
-  const key = String(tabId);
-
-  if (!(key in byTabId)) return;
-
-  delete byTabId[key];
-  await chrome.storage.session.set({ [TAB_BYPASS_KEY]: byTabId });
+  if (!tabBypassById.has(tabId)) return;
+  tabBypassById.delete(tabId);
 }
 
 async function getStoredSiteSettings() {
@@ -82,33 +80,16 @@ async function setStoredSiteSettings(siteKey, settings) {
   return all[siteKey];
 }
 
-async function getRememberEnabled() {
-  const stored = await chrome.storage.local.get({ [REMEMBER_KEY]: true });
-  return stored[REMEMBER_KEY] !== false;
-}
-
-async function setRememberEnabled(value) {
-  await chrome.storage.local.set({ [REMEMBER_KEY]: Boolean(value) });
-}
-
 async function getTabSession(tabId) {
-  const stored = await chrome.storage.session.get({ [TAB_SESSION_KEY]: {} });
-  const byTabId = stored[TAB_SESSION_KEY];
-  return byTabId && typeof byTabId === 'object' ? (byTabId[String(tabId)] || null) : null;
+  return tabSessionById.get(tabId) || null;
 }
 
 async function setTabSession(tabId, settings) {
-  const stored = await chrome.storage.session.get({ [TAB_SESSION_KEY]: {} });
-  const byTabId = stored[TAB_SESSION_KEY] || {};
-  byTabId[String(tabId)] = normalizeSettings(settings);
-  await chrome.storage.session.set({ [TAB_SESSION_KEY]: byTabId });
+  tabSessionById.set(tabId, normalizeSettings(settings));
 }
 
 async function clearTabSession(tabId) {
-  const stored = await chrome.storage.session.get({ [TAB_SESSION_KEY]: {} });
-  const byTabId = stored[TAB_SESSION_KEY] || {};
-  delete byTabId[String(tabId)];
-  await chrome.storage.session.set({ [TAB_SESSION_KEY]: byTabId });
+  tabSessionById.delete(tabId);
 }
 
 async function resolveSettingsForTab(tabId) {
@@ -121,9 +102,12 @@ async function resolveSettingsForTab(tabId) {
     return { eligible, siteKey, settings: normalizeSettings(session) };
   }
 
-  if (eligible && siteKey && (await getRememberEnabled())) {
+  if (eligible && siteKey) {
     const all = await getStoredSiteSettings();
-    return { eligible, siteKey, settings: normalizeSettings(all[siteKey]) };
+    const stored = all[siteKey];
+    if (stored) {
+      return { eligible, siteKey, settings: normalizeSettings(stored) };
+    }
   }
 
   return { eligible, siteKey, settings: normalizeSettings(null) };
@@ -141,7 +125,6 @@ async function buildTabState(tabId) {
     bypass,
     settings,
     siteKey,
-    rememberEnabled: await getRememberEnabled(),
   };
 }
 
@@ -238,25 +221,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       case 'SET_SITE_SETTINGS': {
         const tabId = Number(message.tabId);
         const settings = normalizeSettings(message.settings);
-        const rememberEnabled = await getRememberEnabled();
-        const persist = message.persist !== false && rememberEnabled;
 
-        if (persist && message.siteKey) {
+        if (message.siteKey) {
           await setStoredSiteSettings(message.siteKey, settings);
         }
         await setTabSession(tabId, settings);
 
         const push = await pushTabState(tabId);
         return { ok: true, settings, pushed: push.ok };
-      }
-      case 'SET_REMEMBER': {
-        await setRememberEnabled(Boolean(message.value));
-        if (message.value && message.siteKey && message.settings) {
-          const tabId = Number(message.tabId);
-          await setStoredSiteSettings(message.siteKey, message.settings);
-          await clearTabSession(tabId);
-        }
-        return { ok: true };
       }
       case 'SET_TAB_BYPASS': {
         const tabId = Number(message.tabId);
@@ -269,7 +241,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       case 'ENSURE_TAB_HOOKS': {
         const tabId = Number(message.tabId || sender.tab?.id);
         if (!Number.isInteger(tabId) || tabId < 0) throw new Error('Missing tabId.');
-        return injectMainWorldHook(tabId);
+        await injectMainWorldHook(tabId);
+        return pushTabState(tabId);
       }
       default:
         return { ok: false, error: 'unknown_message' };
@@ -281,4 +254,27 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     });
 
   return true;
+});
+
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area === 'local' && changes.siteToggles) {
+    const newToggles = changes.siteToggles.newValue || {};
+    const oldToggles = changes.siteToggles.oldValue || {};
+    for (const siteKey of Object.keys(newToggles)) {
+      if (newToggles[siteKey] !== oldToggles[siteKey]) {
+        chrome.tabs.query({}, (tabs) => {
+          tabs.forEach(tab => {
+            if (tab.url) {
+              try {
+                const hostname = new URL(tab.url).hostname.toLowerCase();
+                if (hostname === siteKey || hostname + ':443' === siteKey) {
+                  chrome.tabs.sendMessage(tab.id, { type: 'TOGGLE_CHANGED', siteKey, enabled: newToggles[siteKey] }).catch(() => {});
+                }
+              } catch {}
+            }
+          });
+        });
+      }
+    }
+  }
 });

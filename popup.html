@@ -47,7 +47,6 @@
       padding: 2px 4px;
       line-height: 1;
       opacity: 0.5;
-      transition: opacity 120ms ease;
     }
     .reset-btn:hover {
       opacity: 1;
@@ -118,7 +117,6 @@
       border-radius: 999px;
       cursor: pointer;
       user-select: none;
-      transition: background 120ms ease;
     }
     .toggle-pill:hover { background: var(--surface-hover); }
     .toggle-pill input {
@@ -131,7 +129,6 @@
       position: relative;
       cursor: pointer;
       outline: none;
-      transition: background 120ms ease;
     }
     .toggle-pill input::before {
       content: "";
@@ -142,7 +139,6 @@
       height: 14px;
       background: #d1d5db;
       border-radius: 50%;
-      transition: transform 120ms ease;
     }
     .toggle-pill input:checked { background: var(--accent); }
     .toggle-pill input:checked::before {
@@ -185,10 +181,6 @@
     <div class="readout-sm" id="intensity-readout">34%</div>
     <input type="range" id="intensity-slider" min="0" max="1" step="0.01" value="0">
     <div class="toggles">
-      <label class="toggle-pill">
-        <input type="checkbox" id="remember-toggle" checked>
-        <span>Remember</span>
-      </label>
       <label class="toggle-pill">
         <input type="checkbox" id="power-toggle" checked>
         <span>Active</span>

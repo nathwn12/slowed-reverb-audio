@@ -3,7 +3,6 @@ const resetBtnEl = document.getElementById('reset-btn');
 const statusDotEl = document.getElementById('status-dot');
 const statusTextEl = document.getElementById('status-text');
 const powerToggleEl = document.getElementById('power-toggle');
-const rememberToggleEl = document.getElementById('remember-toggle');
 const slowSliderEl = document.getElementById('slow-slider');
 const slowReadoutEl = document.getElementById('slow-readout');
 const intensitySliderEl = document.getElementById('intensity-slider');
@@ -14,6 +13,9 @@ const {
   formatRate,
   getDefaultSettings,
   normalizeSettings,
+  getExactHostKey,
+  loadSiteState,
+  saveSiteState,
 } = globalThis.SlowedReverbShared;
 const defaultSettings = getDefaultSettings();
 
@@ -24,7 +26,6 @@ let siteKey = '';
 let popupState = {
   eligible: false,
   bypass: false,
-  rememberEnabled: true,
   settings: normalizeSettings(),
 };
 let pollTimer = null;
@@ -36,20 +37,28 @@ powerToggleEl.addEventListener('change', () => {
   void updateTabBypass(!powerToggleEl.checked);
 });
 
-rememberToggleEl.addEventListener('change', () => {
-  void handleRememberChange();
-});
-
 slowSliderEl.addEventListener('input', () => {
   const settings = { ...popupState.settings, slow: Number(slowSliderEl.value) };
   applySettingsToUi(settings);
   throttledApply(settings);
 });
 
+slowSliderEl.addEventListener('pointerup', () => {
+  const settings = { ...popupState.settings, slow: Number(slowSliderEl.value) };
+  applySettingsToUi(settings);
+  void applySettings(settings);
+});
+
 intensitySliderEl.addEventListener('input', () => {
   const settings = { ...popupState.settings, reverbIntensity: Number(intensitySliderEl.value) };
   applySettingsToUi(settings);
   throttledApply(settings);
+});
+
+intensitySliderEl.addEventListener('pointerup', () => {
+  const settings = { ...popupState.settings, reverbIntensity: Number(intensitySliderEl.value) };
+  applySettingsToUi(settings);
+  void applySettings(settings);
 });
 
 resetBtnEl.addEventListener('click', () => {
@@ -72,15 +81,15 @@ async function init() {
     const state = await chrome.runtime.sendMessage({ type: 'GET_POPUP_STATE', tabId: activeTabId });
     siteKey = state?.siteKey || '';
 
+    const savedToggle = siteKey ? await loadSiteState(siteKey) : null;
+
     popupState = {
       eligible: Boolean(state?.eligible),
-      bypass: Boolean(state?.bypass),
-      rememberEnabled: state?.rememberEnabled !== false,
+      bypass: savedToggle !== null ? !savedToggle : Boolean(state?.bypass),
       settings: normalizeSettings(state?.settings),
     };
 
     powerToggleEl.checked = !popupState.bypass;
-    rememberToggleEl.checked = popupState.rememberEnabled;
     applySettingsToUi(popupState.settings);
     setSupportedUi(popupState.eligible);
     await refreshLiveStatus();
@@ -109,7 +118,6 @@ function setSupportedUi(supported) {
   slowSliderEl.disabled = !supported;
   intensitySliderEl.disabled = !supported;
   powerToggleEl.disabled = !supported;
-  rememberToggleEl.disabled = !supported;
 }
 
 function applySettingsToUi(settings) {
@@ -139,7 +147,7 @@ async function applySettings(settings) {
       tabId: activeTabId,
       siteKey,
       settings: normalized,
-      persist: popupState.rememberEnabled,
+      persist: true,
     }),
     ...(activeTabId && popupState.eligible
       ? [chrome.tabs.sendMessage(activeTabId, { type: 'APPLY_LIVE_SETTINGS', settings: normalized }).catch(() => {})]
@@ -159,28 +167,22 @@ async function updateTabBypass(bypass) {
     });
     popupState.bypass = Boolean(state?.bypass);
     powerToggleEl.checked = !popupState.bypass;
+
+    if (siteKey) {
+      await saveSiteState(siteKey, !popupState.bypass);
+    }
+
+    if (activeTabId) {
+      const tab = await chrome.tabs.get(activeTabId);
+      if (tab?.url) {
+        await chrome.tabs.update(activeTabId, { url: tab.url });
+      }
+    }
+
     await refreshLiveStatus();
   } catch {
     powerToggleEl.checked = !bypass;
     renderStatus('red', 'Could not update tab power state.');
-  }
-}
-
-async function handleRememberChange() {
-  const enabled = rememberToggleEl.checked;
-  popupState.rememberEnabled = enabled;
-
-  await chrome.runtime.sendMessage({
-    type: 'SET_REMEMBER',
-    value: enabled,
-    siteKey,
-    tabId: activeTabId,
-    settings: enabled ? popupState.settings : undefined,
-  });
-
-  if (enabled && siteKey && activeTabId) {
-    await applySettings(popupState.settings);
-    await refreshLiveStatus();
   }
 }
 

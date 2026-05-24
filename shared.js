@@ -75,6 +75,63 @@
     return normalized.slow === 1 && normalized.reverbIntensity === 0;
   }
 
+  // --- Firefox port: exact-host site key (no subdomain collapsing) ---
+
+  function getExactHostKey(url) {
+    try {
+      const u = new URL(url);
+      let key = u.hostname.toLowerCase();
+      if (u.port && u.port !== '80' && u.port !== '443') {
+        key += ':' + u.port;
+      }
+      return key;
+    } catch {
+      return '';
+    }
+  }
+
+  function storageGet(keys) {
+    return chrome.storage.local.get(keys);
+  }
+
+  function storageSet(items) {
+    return chrome.storage.local.set(items);
+  }
+
+  async function loadSiteState(siteKey) {
+    const result = await storageGet('siteToggles');
+    const toggles = result.siteToggles || {};
+    return siteKey in toggles ? toggles[siteKey] : null;
+  }
+
+  async function saveSiteState(siteKey, enabled) {
+    const result = await storageGet('siteToggles');
+    const toggles = result.siteToggles || {};
+    toggles[siteKey] = enabled;
+    await storageSet({ siteToggles: toggles });
+  }
+
+  async function migrateLegacyState(siteKey) {
+    const result = await storageGet(['siteSettings', 'tabSessionById']);
+    let migrated = false;
+    if (result.siteSettings && result.siteSettings[siteKey]) {
+      const existing = await loadSiteState(siteKey);
+      if (existing === null) {
+        await saveSiteState(siteKey, true);
+        migrated = true;
+      }
+    }
+    return migrated;
+  }
+
+  function onStorageChanged(callback) {
+    chrome.storage.onChanged.addListener((changes, area) => {
+      if (area === 'local' && changes.siteToggles) {
+        callback(changes.siteToggles.newValue || {});
+      }
+    });
+  }
+
   return {
     DEFAULT_SETTINGS,
     SUPPORTED_HOSTS,
@@ -89,5 +146,12 @@
     isSupportedHost,
     isSupportedUrl,
     normalizeSettings,
+    getExactHostKey,
+    storageGet,
+    storageSet,
+    loadSiteState,
+    saveSiteState,
+    migrateLegacyState,
+    onStorageChanged,
   };
 });

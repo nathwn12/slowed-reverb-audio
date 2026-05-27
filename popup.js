@@ -172,13 +172,6 @@ async function updateTabBypass(bypass) {
       await saveSiteState(siteKey, !popupState.bypass);
     }
 
-    if (activeTabId) {
-      const tab = await chrome.tabs.get(activeTabId);
-      if (tab?.url) {
-        await chrome.tabs.update(activeTabId, { url: tab.url });
-      }
-    }
-
     await refreshLiveStatus();
   } catch {
     powerToggleEl.checked = !bypass;

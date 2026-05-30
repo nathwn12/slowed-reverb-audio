@@ -13,7 +13,6 @@ const {
   formatRate,
   getDefaultSettings,
   normalizeSettings,
-  getExactHostKey,
   loadSiteState,
   saveSiteState,
 } = globalThis.SlowedReverbShared;

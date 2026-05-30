@@ -26,7 +26,6 @@ export default [
         AudioWorkletProcessor: "readonly",
         registerProcessor: "readonly",
         sampleRate: "readonly",
-        module: "readonly",
       },
     },
     rules: {

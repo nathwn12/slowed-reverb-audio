@@ -18,7 +18,6 @@
     media: new Map(),
     observer: null,
     scanQueued: false,
-    recoveryQueued: false,
     hookRefreshQueued: false,
     context: null,
     listenersReady: false,
@@ -233,14 +232,11 @@ function applyRuntimeState(runtime) {
   }
 
   function queueCriticalRecovery(reason) {
-    state.recoveryQueued = true;
-
     if (!state.pageHookReady || reason === 'bootstrap' || reason === 'missing-hook') {
       void requestHookRefresh(reason);
     }
 
     queueMicrotask(() => {
-      state.recoveryQueued = false;
       queueScan();
       syncAllMedia();
     });
@@ -292,7 +288,6 @@ function applyRuntimeState(runtime) {
       dattorroNode: null,
       originalRate: media.playbackRate,
       originalPitch: readPitchState(media),
-      originalMuted: media.muted,
       internalRateWrite: false,
       rateHandler: null,
       resetHandler: null,
@@ -306,7 +301,6 @@ function applyRuntimeState(runtime) {
       } else {
         controller.originalRate = media.playbackRate;
         controller.originalPitch = readPitchState(media);
-        controller.originalMuted = media.muted;
       }
     };
 
@@ -548,11 +542,6 @@ function applyRuntimeState(runtime) {
         media.playbackRate = parseFloat(rate.toFixed(2));
       }
       media.muted = controller.attached;
-      if (controller.originalRate === undefined) {
-        controller.originalRate = media.playbackRate;
-        controller.originalPitch = readPitchState(media);
-        controller.originalMuted = media.muted;
-      }
     } finally {
       queueMicrotask(() => {
         controller.internalRateWrite = false;

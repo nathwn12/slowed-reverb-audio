@@ -1,10 +1,6 @@
 (function (root, factory) {
   const api = factory();
 
-  if (typeof module !== 'undefined' && module.exports) {
-    module.exports = api;
-  }
-
   root.SlowedReverbShared = api;
 })(typeof globalThis !== 'undefined' ? globalThis : this, function () {
   const SUPPORTED_HOSTS = new Set(['youtube.com', 'www.youtube.com', 'music.youtube.com']);
@@ -45,10 +41,6 @@
     try { return new URL(url).hostname; } catch { return ''; }
   }
 
-  function getSiteKey(hostname) {
-    return String(hostname || '').trim().toLowerCase().replace(/\.+$/, '');
-  }
-
   function isSupportedHost(hostname) {
     return SUPPORTED_HOSTS.has(String(hostname || '').toLowerCase());
   }
@@ -75,21 +67,6 @@
     return normalized.slow === 1 && normalized.reverbIntensity === 0;
   }
 
-  // --- Firefox port: exact-host site key (no subdomain collapsing) ---
-
-  function getExactHostKey(url) {
-    try {
-      const u = new URL(url);
-      let key = u.hostname.toLowerCase();
-      if (u.port && u.port !== '80' && u.port !== '443') {
-        key += ':' + u.port;
-      }
-      return key;
-    } catch {
-      return '';
-    }
-  }
-
   function storageGet(keys) {
     return chrome.storage.local.get(keys);
   }
@@ -111,47 +88,16 @@
     await storageSet({ siteToggles: toggles });
   }
 
-  async function migrateLegacyState(siteKey) {
-    const result = await storageGet(['siteSettings', 'tabSessionById']);
-    let migrated = false;
-    if (result.siteSettings && result.siteSettings[siteKey]) {
-      const existing = await loadSiteState(siteKey);
-      if (existing === null) {
-        await saveSiteState(siteKey, true);
-        migrated = true;
-      }
-    }
-    return migrated;
-  }
-
-  function onStorageChanged(callback) {
-    chrome.storage.onChanged.addListener((changes, area) => {
-      if (area === 'local' && changes.siteToggles) {
-        callback(changes.siteToggles.newValue || {});
-      }
-    });
-  }
-
   return {
-    DEFAULT_SETTINGS,
-    SUPPORTED_HOSTS,
-    clampIntensity,
-    clampSlow,
     extractHostname,
     formatPercent,
     formatRate,
     getDefaultSettings,
-    getSiteKey,
     isNeutral,
     isSupportedHost,
     isSupportedUrl,
     normalizeSettings,
-    getExactHostKey,
-    storageGet,
-    storageSet,
     loadSiteState,
     saveSiteState,
-    migrateLegacyState,
-    onStorageChanged,
   };
 });

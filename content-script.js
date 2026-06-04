@@ -475,10 +475,6 @@ function applyRuntimeState(runtime) {
       return media.captureStream();
     }
 
-    if (typeof media.mozCaptureStream === 'function') {
-      return media.mozCaptureStream();
-    }
-
     return null;
   }
 

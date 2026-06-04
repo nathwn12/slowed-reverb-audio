@@ -8,7 +8,6 @@
 /.prod
 *.md
 *.zip
-*.xpi
 /.agnes/
 /output/
 /user-data/

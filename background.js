@@ -1,4 +1,4 @@
-try { importScripts('shared.js'); } catch {} // Firefox uses background.scripts instead
+importScripts('shared.js');
 
 const {
   extractHostname,
@@ -23,15 +23,11 @@ function isEligibleTab(tab) {
 }
 
 async function injectMainWorldScript(tabId, file) {
-  try {
-    await chrome.scripting.executeScript({
-      target: { tabId },
-      files: [file],
-      world: 'MAIN',
-    });
-  } catch {
-    await chrome.tabs.executeScript(tabId, { file });
-  }
+  await chrome.scripting.executeScript({
+    target: { tabId },
+    files: [file],
+    world: 'MAIN',
+  });
 }
 
 async function injectMainWorldHook(tabId) {

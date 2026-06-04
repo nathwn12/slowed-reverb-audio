@@ -40,7 +40,6 @@ slowed-reverb-audio/
 3. Adjust speed slider (0.7x–1.3x)
 4. Adjust reverb intensity (0–100%)
 5. Toggle **Active** to enable/disable
-6. Enable **Remember** to persist per-site settings
 
 ## Permissions
 

@@ -454,8 +454,8 @@ function applyRuntimeState(runtime) {
 
   function getAudioContext() {
     if (!state.context) {
-      const AudioContextCtor = window.AudioContext || window.webkitAudioContext;
-      state.context = new AudioContextCtor();
+      // Chromium-only: AudioContext is unprefixed since Chrome 35 (2014).
+      state.context = new AudioContext();
       void loadWorklet(state.context);
     }
     return state.context;
@@ -605,6 +605,11 @@ function applyRuntimeState(runtime) {
     }
   }
 
+  // Chromium-only, but DO NOT strip the prefixed aliases below.
+  // Chrome exposes `mozPreservesPitch`/`webkitPreservesPitch` as real,
+  // writable HTMLMediaElement properties, and YouTube's own player reads and
+  // writes them. If we only set `preservesPitch`, YouTube can clobber our
+  // pitch-preservation and the slow effect reverts to chipmunk audio.
   function readPitchState(media) {
     return {
       preservesPitch: readMaybe(media, 'preservesPitch'),

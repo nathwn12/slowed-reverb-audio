@@ -88,7 +88,12 @@ class DattorroReverbProcessor extends AudioWorkletProcessor {
 
     this.modDelay1 = new DelayLine(672);
     this.modDelay2 = new DelayLine(908);
-    this.modCount = 0;
+    // Base offsets for the delay-line modulation triangle (samples).
+    this.modDelay1.base = this.modDelay1.offset;
+    this.modDelay2.base = this.modDelay2.offset;
+    this.modDepth = 8;
+    this.modPhase = 0;
+    this.modDir = 1;
 
     this.preDampDL = [new DelayLine(4453), new DelayLine(4217)];
     this.preDampDL[0].setTap('out1', 353);
@@ -161,14 +166,13 @@ class DattorroReverbProcessor extends AudioWorkletProcessor {
       }
 
       if ((this.t & 0x7ff) === 0) {
-        if (this.modCount < 16) {
-          this.modDelay1.offset = Math.max(0, this.modDelay1.offset - 1);
-          this.modDelay2.offset = Math.max(0, this.modDelay2.offset - 1);
-        } else {
-          this.modDelay1.offset = Math.min(this.modDelay1.buf.length - this.modDelay1.mask, this.modDelay1.offset + 1);
-          this.modDelay2.offset = Math.min(this.modDelay2.buf.length - this.modDelay2.mask, this.modDelay2.offset + 1);
-        }
-        this.modCount = (this.modCount + 1) % 32;
+        // Slow triangle LFO: sweep the modulated-delay read offsets a few
+        // samples each way so the reverb tail stays shimmering, not metallic.
+        if (this.modPhase >= this.modDepth) this.modDir = -1;
+        if (this.modPhase <= -this.modDepth) this.modDir = 1;
+        this.modPhase += this.modDir;
+        this.modDelay1.offset = this.modDelay1.base + this.modPhase;
+        this.modDelay2.offset = this.modDelay2.base + this.modPhase;
       }
 
       let x1 = x + this.postDampDL[1].read(this.t) * this.decayAmt;

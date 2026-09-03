@@ -505,14 +505,14 @@ function applyRuntimeState(runtime) {
       return { wetGain: 0, decay: 0, damping: 1, preDelay: 0 };
     }
     return {
-      preDelay: 0.3 + i * 0.5,
-      preFilter: 0.7 + i * 0.2,
+      preDelay: 0.44 + i * 0.1,
+      preFilter: 0.7 + i * 0.1,
       inputDiff1: 0.75,
       inputDiff2: 0.625,
-      decayDiff1: 0.6 + i * 0.2,
-      decay: Math.pow(i, 1.3) * 0.85,
-      damping: 0.5 + Math.pow(i, 0.6) * 0.4,
-      wetGain: Math.pow(i, 1.5) * 0.7,
+      decayDiff1: 0.65 + i * 0.05,
+      decay: Math.pow(i, 0.75) * 0.58,
+      damping: Math.min(0.5 + Math.pow(i, 0.6) * 0.4, 0.78),
+      wetGain: Math.pow(i, 0.75) * 0.42,
     };
   }
 

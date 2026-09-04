@@ -6,7 +6,7 @@ Lightweight Chrome extension that slows YouTube audio and adds built-in reverb l
 
 - Slows YouTube audio from 0.7x to 1.3x without pitch distortion
 - Adds Dattorro plate reverb with adjustable intensity
-- Per-site settings with optional persistence
+- Per-site speed, reverb, and Active state persist in `chrome.storage.local`, survive restart/refresh/close-reopen, and auto-apply on first play (no background autoplay before user gesture; last write wins per site across tabs)
 - Works with YouTube and YouTube Music
 
 ## Files

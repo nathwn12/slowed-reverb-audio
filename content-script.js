@@ -196,6 +196,8 @@ function applyRuntimeState(runtime) {
 
   let recoveryTimer = null;
   let rateWatchdogTimer = null;
+  const ATTACH_RETRY_MAX_ATTEMPTS = 20;
+  const ATTACH_RETRY_MAX_DELAY_MS = 2000;
 
   function startRateWatchdog() {
     stopRateWatchdog();
@@ -226,8 +228,10 @@ function applyRuntimeState(runtime) {
 
     recoveryTimer = setTimeout(() => {
       recoveryTimer = null;
-      queueScan();
-      syncAllMedia();
+      void refreshRuntimeState().then(() => {
+        queueScan();
+        syncAllMedia();
+      });
     }, 50);
   }
 
@@ -258,6 +262,21 @@ function applyRuntimeState(runtime) {
     }
   }
 
+  async function refreshRuntimeState() {
+    try {
+      const runtime = await chrome.runtime.sendMessage({ type: 'GET_TAB_RUNTIME_STATE' });
+      if (runtime && typeof runtime === 'object') {
+        try {
+          applyRuntimeState(runtime);
+        } catch {
+          // Keep local state; scan+sync still run below.
+        }
+      }
+    } catch {
+      // SW unreachable; keep local state and still scan+sync below.
+    }
+  }
+
   function scanMediaElements() {
     document.querySelectorAll('audio,video').forEach((media) => {
       if (media instanceof HTMLMediaElement) {
@@ -280,6 +299,7 @@ function applyRuntimeState(runtime) {
       attached: false,
       attachedSrc: '',
       failed: false,
+      pendingRetry: null,
       attachError: '',
       stream: null,
       source: null,
@@ -364,17 +384,37 @@ function applyRuntimeState(runtime) {
     }
 
     if (!ensureAttached(controller)) {
-      if (retryCount < 5) {
-        setTimeout(() => syncMediaController(controller, retryCount + 1), 200 * (retryCount + 1));
-      } else {
-        teardownController(controller, false, state.context);
-      }
+      scheduleAttachRetry(controller, retryCount);
       return;
     }
+    cancelAttachRetry(controller);
 
     updateWetChain(controller);
     const cleanSlow = parseFloat(state.settings.slow.toFixed(2));
     setMediaPlaybackState(controller, cleanSlow, false);
+  }
+
+  function scheduleAttachRetry(controller, retryCount = 0) {
+    if (controller.pendingRetry) return;
+    const attempt = Number(retryCount) || 0;
+    if (attempt >= ATTACH_RETRY_MAX_ATTEMPTS) {
+      teardownController(controller, false, state.context);
+      return;
+    }
+    const delay = Math.min(200 * (attempt + 1), ATTACH_RETRY_MAX_DELAY_MS);
+    controller.pendingRetry = setTimeout(() => {
+      controller.pendingRetry = null;
+      if (!controller.media.isConnected) return;
+      if (!state.eligible || state.bypass) return;
+      syncMediaController(controller, attempt + 1);
+    }, delay);
+  }
+
+  function cancelAttachRetry(controller) {
+    if (controller && controller.pendingRetry) {
+      clearTimeout(controller.pendingRetry);
+      controller.pendingRetry = null;
+    }
   }
 
   function applyBypassState(controller) {
@@ -547,6 +587,7 @@ function applyRuntimeState(runtime) {
 
   function teardownController(controller, removeCompletely, context) {
     if (!controller) return;
+    cancelAttachRetry(controller);
 
     if (controller.attached) {
 

@@ -8,6 +8,7 @@ const {
 
 const TAB_BYPASS_KEY = 'tabBypassById';
 const SITE_SETTINGS_KEY = 'siteSettings';
+const SITE_TOGGLES_KEY = 'siteToggles';
 const TAB_SESSION_KEY = 'tabSessionById';
 
 const tabBypassById = new Map();
@@ -42,20 +43,50 @@ async function injectMainWorldHook(tabId) {
   }
 }
 
-function getStoredBypassMap() {
-  return Object.fromEntries(tabBypassById);
-}
-
-async function getTabBypass(tabId) {
-  const byTabId = await getStoredBypassMap();
-  return Boolean(byTabId[String(tabId)]);
+async function getTabBypass(tabId, siteKey) {
+  // Storage is authoritative per site: an explicit siteToggles entry wins in
+  // both directions (last write wins across tabs). Memory only covers a
+  // storage outage within this session, and only for the host it was set on.
+  if (siteKey) {
+    try {
+      const stored = await chrome.storage.local.get({ [SITE_TOGGLES_KEY]: {} });
+      const toggles = stored[SITE_TOGGLES_KEY] || {};
+      if (siteKey in toggles) return toggles[siteKey] === false;
+    } catch {
+      // Best effort only; fall through to memory below.
+    }
+  }
+  if (tabBypassById.has(tabId)) {
+    if (tabBypassById.get(tabId) === siteKey) return true;
+    // Stale entry (tab navigated to another host since): drop it.
+    tabBypassById.delete(tabId);
+  }
+  return false;
 }
 
 async function setTabBypass(tabId, bypass) {
+  // Resolve the host first: memory records the siteKey the bypass was set
+  // for, so a later navigation to another host cannot inherit it.
+  let siteKey = '';
+  try {
+    const tab = await getEligibleTab(tabId);
+    siteKey = tab ? extractHostname(tab.url) : '';
+  } catch {
+    siteKey = '';
+  }
   if (bypass) {
-    tabBypassById.set(tabId, true);
+    tabBypassById.set(tabId, siteKey);
   } else {
     tabBypassById.delete(tabId);
+  }
+  if (!siteKey) return;
+  try {
+    const stored = await chrome.storage.local.get({ [SITE_TOGGLES_KEY]: {} });
+    const toggles = stored[SITE_TOGGLES_KEY] || {};
+    toggles[siteKey] = !bypass;
+    await chrome.storage.local.set({ [SITE_TOGGLES_KEY]: toggles });
+  } catch {
+    // Best effort only; memory state still applies for this session.
   }
 }
 
@@ -112,7 +143,8 @@ async function resolveSettingsForTab(tabId) {
 async function buildTabState(tabId) {
   const tab = await getEligibleTab(tabId);
   const eligible = isEligibleTab(tab);
-  const bypass = eligible ? await getTabBypass(tabId) : false;
+  const siteKeyForBypass = tab ? extractHostname(tab.url) : '';
+  const bypass = eligible ? await getTabBypass(tabId, siteKeyForBypass) : false;
   const { siteKey, settings } = await resolveSettingsForTab(tabId);
 
   return {
@@ -193,13 +225,45 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   ]).catch(() => {});
 });
 
+// Note: if onRemoved fires before onReplaced for the same tab, the entries
+// below are already gone and there is nothing to migrate; persistent storage
+// (siteToggles/siteSettings) remains the fallback, so the tab still hydrates.
+chrome.tabs.onReplaced.addListener((addedTabId, removedTabId) => {
+  if (tabBypassById.has(removedTabId)) {
+    tabBypassById.set(addedTabId, tabBypassById.get(removedTabId));
+    tabBypassById.delete(removedTabId);
+  }
+  if (tabSessionById.has(removedTabId)) {
+    tabSessionById.set(addedTabId, tabSessionById.get(removedTabId));
+    tabSessionById.delete(removedTabId);
+  }
+  pushTabState(addedTabId).catch(() => {});
+});
+
+// Concurrent full rehydrates (import + onStartup + onInstalled all fire at
+// startup) are deduped behind one in-flight run.
+let rehydratePromise = null;
+function scheduleRehydrate() {
+  if (rehydratePromise) return rehydratePromise;
+  rehydratePromise = rehydrateAllTabs().catch(() => {}).finally(() => { rehydratePromise = null; });
+  return rehydratePromise;
+}
+
 chrome.runtime.onStartup.addListener(() => {
-  void rehydrateAllTabs();
+  void scheduleRehydrate();
 });
 
 chrome.runtime.onInstalled.addListener(() => {
-  void rehydrateAllTabs();
+  void scheduleRehydrate();
 });
+
+// onStartup does not fire when the worker wakes from idle, so rehydrate
+// best-effort on every SW evaluation. Must never throw at import.
+try {
+  void scheduleRehydrate().catch(() => {});
+} catch {
+  // Never throw at import.
+}
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (!message?.type) return false;
@@ -229,6 +293,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       case 'SET_TAB_BYPASS': {
         const tabId = Number(message.tabId);
         if (!Number.isInteger(tabId) || tabId < 0) throw new Error('Missing tabId.');
+        if (!isEligibleTab(await getEligibleTab(tabId))) return { ok: false, error: 'unsupported' };
         await setTabBypass(tabId, Boolean(message.bypass));
         const push = await pushTabState(tabId);
         const state = await buildTabState(tabId);

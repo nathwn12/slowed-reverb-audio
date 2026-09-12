@@ -589,17 +589,18 @@ function applyRuntimeState(runtime) {
     if (!controller) return;
     cancelAttachRetry(controller);
 
+    // Only touch the element's playback state when this controller actually
+    // attached and changed it. While bypassed (or before a first attach) the
+    // extension must not clear the page's own mute/rate on every sync.
     if (controller.attached) {
-
       disconnectNode(controller.source);
       disconnectNode(controller.dryGain);
       disconnectNode(controller.masterGain);
       if (controller.dattorroNode) {
         try { controller.dattorroNode.disconnect(); } catch {}
       }
+      restoreMediaPlaybackState(controller);
     }
-
-    restoreMediaPlaybackState(controller);
 
     controller.attached = false;
     controller.attachedSrc = '';

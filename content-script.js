@@ -25,6 +25,7 @@
     pageHookReady: false,
     lastError: '',
     workletLoaded: false,
+    lastNonzeroIntensity: 0,
   };
 
   globalThis.__slowedReverbAudioContent = {
@@ -72,6 +73,9 @@
 
       if (message?.type === 'APPLY_LIVE_SETTINGS') {
         state.settings = normalizeSettings({ ...state.settings, ...(message.settings || {}) });
+        if (state.settings.reverbIntensity > 0) {
+          state.lastNonzeroIntensity = state.settings.reverbIntensity;
+        }
         state.lastError = '';
         syncAllMedia();
         sendResponse({ ok: true, settings: state.settings, status: getLiveStatus() });
@@ -179,6 +183,9 @@ function applyRuntimeState(runtime) {
   state.bypass = Boolean(runtime?.bypass);
   if (runtime?.settings !== undefined) {
     state.settings = normalizeSettings(runtime.settings);
+    if (state.settings.reverbIntensity > 0) {
+      state.lastNonzeroIntensity = state.settings.reverbIntensity;
+    }
   }
   state.lastError = '';
     syncAllMedia();
@@ -298,6 +305,7 @@ function applyRuntimeState(runtime) {
       media,
       attached: false,
       attachedSrc: '',
+      sourceStale: false,
       failed: false,
       pendingRetry: null,
       attachError: '',
@@ -309,6 +317,7 @@ function applyRuntimeState(runtime) {
       originalRate: media.playbackRate,
       originalPitch: readPitchState(media),
       internalRateWrite: false,
+      lastPostedParams: null,
       rateHandler: null,
       resetHandler: null,
       loadHandler: null,
@@ -326,29 +335,29 @@ function applyRuntimeState(runtime) {
 
     controller.resetHandler = () => {
       if (controller.attached) {
-        teardownController(controller, false, state.context);
-        controller.attached = false;
-        controller.stream = null;
-        controller.source = null;
-        controller.failed = false;
+        controller.sourceStale = true;
+        if (controller.masterGain) {
+          rampGain(controller.masterGain.gain, 0);
+        }
+        controller.media.muted = false;
       }
       queueCriticalRecovery('emptied');
     };
 
     controller.loadHandler = () => {
       if (controller.attached) {
-        teardownController(controller, false, state.context);
-        controller.attached = false;
-        controller.stream = null;
-        controller.source = null;
-        controller.failed = false;
+        controller.sourceStale = true;
+        if (controller.masterGain) {
+          rampGain(controller.masterGain.gain, 0);
+        }
+        controller.media.muted = false;
       }
       queueCriticalRecovery('loadedmetadata');
     };
 
     controller.volumeHandler = () => {
       if (!controller.attached || !controller.masterGain) return;
-      controller.masterGain.gain.value = controller.media.volume;
+      rampGain(controller.masterGain.gain, controller.media.volume);
       setMediaPlaybackState(controller, state.settings.slow, false);
     };
 
@@ -423,6 +432,14 @@ function applyRuntimeState(runtime) {
 
   function ensureAttached(controller) {
     if (controller.attached) {
+      if (controller.sourceStale) {
+        // Source-only swap: keep the tank circulating, wait for a usable new src.
+        if (!controller.media.currentSrc || !isMediaReadyForAttach(controller.media)) {
+          return false;
+        }
+        return rebuildStreamSource(controller);
+      }
+
       const currentSrc = controller.media.currentSrc;
       if (!currentSrc || currentSrc === controller.attachedSrc) {
         return true;
@@ -450,6 +467,19 @@ function applyRuntimeState(runtime) {
             queueScan();
           }
         });
+
+        // No audio track yet: leave the element unmuted and retry later rather
+        // than muting it against a silent stream (mirrors rebuildStreamSource).
+        stream.getTracks().forEach((track) => {
+          try {
+            track.stop();
+          } catch {
+            // Track already stopped.
+          }
+        });
+        controller.sourceStale = true;
+        controller.media.muted = false;
+        return false;
       }
 
       const source = context.createMediaStreamSource(stream);
@@ -457,11 +487,11 @@ function applyRuntimeState(runtime) {
       const masterGain = context.createGain();
       const dattorroNode = new AudioWorkletNode(context, 'dattorro-reverb');
 
-      const initialParams = computeDattorroParams(state.settings.reverbIntensity);
+      const initialParams = computePostParams(state.settings.reverbIntensity);
       dattorroNode.port.postMessage({ type: 'reset' });
       dattorroNode.port.postMessage({ type: 'setParams', params: initialParams });
 
-      dryGain.gain.value = 1 - initialParams.wetGain;
+      dryGain.gain.value = 0;
       masterGain.gain.value = 0;
 
       source.connect(dryGain);
@@ -470,7 +500,9 @@ function applyRuntimeState(runtime) {
       dattorroNode.connect(masterGain);
       masterGain.connect(context.destination);
 
-      masterGain.gain.value = controller.media.volume;
+      controller.media.muted = true;
+      rampGain(dryGain.gain, 1 - initialParams.wetGain);
+      rampGain(masterGain.gain, controller.media.volume);
 
       controller.stream = stream;
       controller.source = source;
@@ -479,12 +511,87 @@ function applyRuntimeState(runtime) {
       controller.dattorroNode = dattorroNode;
       controller.attached = true;
       controller.attachedSrc = controller.media.currentSrc;
+      controller.sourceStale = false;
+      controller.lastPostedParams = JSON.stringify(initialParams);
       controller.attachError = '';
       void resumeContext().then(() => {
         syncMediaController(controller, 0);
       });
       return true;
     } catch (error) {
+      controller.failed = true;
+      controller.attachError = 'Could not attach audio effect.';
+      state.lastError = String(error && error.message ? error.message : error);
+      return false;
+    }
+  }
+
+  function rebuildStreamSource(controller) {
+    let capturedStream = null;
+    try {
+      const stream = captureMediaStream(controller.media);
+      if (!stream) {
+        throw new Error('captureStream unavailable for this media element.');
+      }
+      capturedStream = stream;
+
+      if (!stream.getAudioTracks().length) {
+        // No audio track yet: leave the element unmuted and retry later rather
+        // than muting it against a silent stream.
+        stream.getTracks().forEach((track) => {
+          try {
+            track.stop();
+          } catch {
+            // Track already stopped.
+          }
+        });
+        controller.sourceStale = true;
+        controller.media.muted = false;
+        return false;
+      }
+
+      const source = state.context.createMediaStreamSource(stream);
+      source.connect(controller.dryGain);
+      source.connect(controller.dattorroNode);
+
+      const previousSource = controller.source;
+      const previousStream = controller.stream;
+
+      controller.source = source;
+      controller.stream = stream;
+      controller.attachedSrc = controller.media.currentSrc;
+      controller.sourceStale = false;
+      controller.failed = false;
+      controller.attachError = '';
+
+      void resumeContext();
+      if (controller.masterGain) {
+        rampGain(controller.masterGain.gain, controller.media.volume);
+      }
+
+      disconnectNode(previousSource);
+      if (previousStream) {
+        previousStream.getTracks().forEach((track) => {
+          try {
+            track.stop();
+          } catch {
+            // Track already stopped.
+          }
+        });
+      }
+      return true;
+    } catch (error) {
+      // Never leave the element muted without an audio path.
+      if (capturedStream) {
+        capturedStream.getTracks().forEach((track) => {
+          try {
+            track.stop();
+          } catch {
+            // Track already stopped.
+          }
+        });
+      }
+      controller.media.muted = false;
       controller.failed = true;
       controller.attachError = 'Could not attach audio effect.';
       state.lastError = String(error && error.message ? error.message : error);
@@ -556,28 +663,61 @@ function applyRuntimeState(runtime) {
     };
   }
 
+  function computePostParams(intensity) {
+    const base = computeDattorroParams(intensity > 0 ? intensity : (state.lastNonzeroIntensity || 0.5));
+    return { ...base, wetGain: intensity > 0 ? base.wetGain : 0 };
+  }
+
+  function rampGain(param, value, tau = 0.015) {
+    if (!param || !state.context) return;
+    param.setTargetAtTime(value, state.context.currentTime, tau);
+  }
+
   function updateWetChain(controller) {
     if (!controller.dattorroNode) return;
-    const params = computeDattorroParams(state.settings.reverbIntensity);
+    const params = computePostParams(state.settings.reverbIntensity);
+    const signature = JSON.stringify(params);
+    if (signature === controller.lastPostedParams) return;
+    controller.lastPostedParams = signature;
     controller.dattorroNode.port.postMessage({ type: 'setParams', params });
     if (controller.dryGain) {
-      controller.dryGain.gain.value = 1 - params.wetGain;
+      rampGain(controller.dryGain.gain, 1 - params.wetGain);
     }
+  }
+
+  function pitchStateMatches(media, intended) {
+    const keys = ['preservesPitch', 'mozPreservesPitch', 'webkitPreservesPitch'];
+    for (const key of keys) {
+      if (!(key in media) || typeof intended[key] === 'undefined') continue;
+      if (media[key] !== intended[key]) return false;
+    }
+    return true;
   }
 
   function setMediaPlaybackState(controller, rate, preservePitch) {
     const media = controller.media;
+    const neutral = Math.abs(rate - 1) < 0.001;
+    const intendedRate = neutral ? controller.originalRate : parseFloat(rate.toFixed(2));
+    const intendedPitch = neutral
+      ? controller.originalPitch
+      : { preservesPitch: preservePitch, mozPreservesPitch: preservePitch, webkitPreservesPitch: preservePitch };
+    const intendedMuted = controller.attached && !controller.sourceStale;
+
+    if (media.playbackRate === intendedRate && media.muted === intendedMuted && pitchStateMatches(media, intendedPitch)) {
+      return;
+    }
+
     controller.internalRateWrite = true;
 
     try {
-      if (Math.abs(rate - 1) < 0.001) {
+      if (neutral) {
         applyPitchState(media, controller.originalPitch);
         media.playbackRate = controller.originalRate;
       } else {
         setPreservesPitch(media, preservePitch);
         media.playbackRate = parseFloat(rate.toFixed(2));
       }
-      media.muted = controller.attached;
+      media.muted = intendedMuted;
     } finally {
       queueMicrotask(() => {
         controller.internalRateWrite = false;
@@ -604,6 +744,8 @@ function applyRuntimeState(runtime) {
 
     controller.attached = false;
     controller.attachedSrc = '';
+    controller.sourceStale = false;
+    controller.lastPostedParams = null;
     controller.stream = null;
     controller.source = null;
     controller.dryGain = null;

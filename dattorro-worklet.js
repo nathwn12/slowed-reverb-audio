@@ -50,7 +50,7 @@ class DattorroReverbProcessor extends AudioWorkletProcessor {
         this.decayDiff2Amt = Math.min(Math.max(p.decay + 0.15, 0.25), 0.50);
       }
       if (p.damping !== undefined) this.dampingAmt = p.damping;
-      if (p.wetGain !== undefined) this.wetGain = p.wetGain;
+      if (p.wetGain !== undefined) this.wetTarget = p.wetGain;
     }
   }
 
@@ -72,6 +72,7 @@ class DattorroReverbProcessor extends AudioWorkletProcessor {
     this.decayDiff2Amt = 0.50;
     this.dampingAmt = 0.95;
     this.wetGain = 0;
+    this.wetTarget = 0;
     this.preFilter = 0;
     this.damping = [0, 0];
     this.hpf = 0;
@@ -142,6 +143,7 @@ class DattorroReverbProcessor extends AudioWorkletProcessor {
     const outL = out[0];
     const outR = out.length > 1 ? out[1] : out[0];
     const sr = this.sr;
+    const wetAlpha = 1 - Math.exp(-1 / (0.005 * sr));
 
     for (let i = 0; i < n; i++) {
       let x = (L[i] + R[i]) * 0.5;
@@ -195,27 +197,35 @@ class DattorroReverbProcessor extends AudioWorkletProcessor {
       x2 = this.allpassDL(this.decayDiff2[1], this.decayDiff2Amt, x2);
       this.postDampDL[1].write(this.t, x2);
 
-      const lpfCoeff = 0.5;
-      const wL = (this.preDampDL[1].readTap(this.t, 'out1')
-            + this.preDampDL[1].readTap(this.t, 'out2')
-            - this.decayDiff2[1].readTap(this.t, 'out2')
-            + this.postDampDL[1].readTap(this.t, 'out2')
-            - this.preDampDL[0].readTap(this.t, 'out3')
-            - this.decayDiff2[0].readTap(this.t, 'out1')
-            + this.postDampDL[0].readTap(this.t, 'out1'));
-      const wR = (this.preDampDL[0].readTap(this.t, 'out1')
-            + this.preDampDL[0].readTap(this.t, 'out2')
-            - this.decayDiff2[0].readTap(this.t, 'out2')
-            + this.postDampDL[0].readTap(this.t, 'out2')
-            - this.preDampDL[1].readTap(this.t, 'out3')
-            - this.decayDiff2[1].readTap(this.t, 'out1')
-            + this.postDampDL[1].readTap(this.t, 'out1'));
+      this.wetGain += (this.wetTarget - this.wetGain) * wetAlpha;
+      if (Math.abs(this.wetGain) < 1e-6) this.wetGain = 0;
 
-      this.wetLpf[0] += lpfCoeff * (wL - this.wetLpf[0]);
-      this.wetLpf[1] += lpfCoeff * (wR - this.wetLpf[1]);
+      if (this.wetGain === 0) {
+        outL[i] = 0;
+        outR[i] = 0;
+      } else {
+        const lpfCoeff = 0.5;
+        const wL = (this.preDampDL[1].readTap(this.t, 'out1')
+              + this.preDampDL[1].readTap(this.t, 'out2')
+              - this.decayDiff2[1].readTap(this.t, 'out2')
+              + this.postDampDL[1].readTap(this.t, 'out2')
+              - this.preDampDL[0].readTap(this.t, 'out3')
+              - this.decayDiff2[0].readTap(this.t, 'out1')
+              + this.postDampDL[0].readTap(this.t, 'out1'));
+        const wR = (this.preDampDL[0].readTap(this.t, 'out1')
+              + this.preDampDL[0].readTap(this.t, 'out2')
+              - this.decayDiff2[0].readTap(this.t, 'out2')
+              + this.postDampDL[0].readTap(this.t, 'out2')
+              - this.preDampDL[1].readTap(this.t, 'out3')
+              - this.decayDiff2[1].readTap(this.t, 'out1')
+              + this.postDampDL[1].readTap(this.t, 'out1'));
 
-      outL[i] = this.wetGain * (this.wetLpf[0] / (1 + Math.abs(this.wetLpf[0])));
-      outR[i] = this.wetGain * (this.wetLpf[1] / (1 + Math.abs(this.wetLpf[1])));
+        this.wetLpf[0] += lpfCoeff * (wL - this.wetLpf[0]);
+        this.wetLpf[1] += lpfCoeff * (wR - this.wetLpf[1]);
+
+        outL[i] = this.wetGain * (this.wetLpf[0] / (1 + Math.abs(this.wetLpf[0])));
+        outR[i] = this.wetGain * (this.wetLpf[1] / (1 + Math.abs(this.wetLpf[1])));
+      }
 
       this.t++;
     }

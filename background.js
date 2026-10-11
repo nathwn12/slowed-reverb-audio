@@ -170,17 +170,10 @@ async function pushTabState(tabId) {
     });
     return { ok: true };
   } catch {
+    // Best effort only: the MAIN-world hook cannot receive runtime messages,
+    // so a retry through it would fail identically. Report unreachable.
     await injectMainWorldHook(tabId);
-    try {
-      await chrome.tabs.sendMessage(tabId, {
-        type: 'APPLY_TAB_STATE',
-        bypass: payload.bypass,
-        settings: payload.settings,
-      });
-      return { ok: true };
-    } catch {
-      return { ok: false, error: 'unreachable' };
-    }
+    return { ok: false, error: 'unreachable' };
   }
 }
 
@@ -328,7 +321,7 @@ chrome.storage.onChanged.addListener((changes, area) => {
             if (tab.url) {
               try {
                 const hostname = new URL(tab.url).hostname.toLowerCase();
-                if (hostname === siteKey || hostname + ':443' === siteKey) {
+                if (hostname === siteKey) {
                   chrome.tabs.sendMessage(tab.id, { type: 'TOGGLE_CHANGED', siteKey, enabled: newToggles[siteKey] }).catch(() => {});
                 }
               } catch {}

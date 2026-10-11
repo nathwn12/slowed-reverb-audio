@@ -213,7 +213,7 @@ function applyRuntimeState(runtime) {
       for (const controller of state.media.values()) {
         if (!controller.attached || controller.failed) continue;
         if (Math.abs(controller.media.playbackRate - state.settings.slow) > 0.02) {
-          setMediaPlaybackState(controller, state.settings.slow, false);
+          setMediaPlaybackState(controller, state.settings.slow, true);
         }
       }
     }, 2000);
@@ -308,6 +308,8 @@ function applyRuntimeState(runtime) {
       sourceStale: false,
       failed: false,
       pendingRetry: null,
+      attachAttempts: 0,
+      lastAttachReset: 0,
       attachError: '',
       stream: null,
       source: null,
@@ -316,17 +318,19 @@ function applyRuntimeState(runtime) {
       dattorroNode: null,
       originalRate: media.playbackRate,
       originalPitch: readPitchState(media),
+      originalMuted: media.muted,
       internalRateWrite: false,
       lastPostedParams: null,
       rateHandler: null,
       resetHandler: null,
       loadHandler: null,
+      volumeHandler: null,
     };
 
     controller.rateHandler = () => {
       if (controller.internalRateWrite) return;
       if (shouldBeActiveForController(controller)) {
-        setMediaPlaybackState(controller, state.settings.slow, false);
+        setMediaPlaybackState(controller, state.settings.slow, true);
       } else {
         controller.originalRate = media.playbackRate;
         controller.originalPitch = readPitchState(media);
@@ -358,7 +362,6 @@ function applyRuntimeState(runtime) {
     controller.volumeHandler = () => {
       if (!controller.attached || !controller.masterGain) return;
       rampGain(controller.masterGain.gain, controller.media.volume);
-      setMediaPlaybackState(controller, state.settings.slow, false);
     };
 
     media.addEventListener('ratechange', controller.rateHandler);
@@ -392,25 +395,34 @@ function applyRuntimeState(runtime) {
       return;
     }
 
+    void resumeContext();
     if (!ensureAttached(controller)) {
       scheduleAttachRetry(controller, retryCount);
       return;
     }
     cancelAttachRetry(controller);
+    controller.attachAttempts = 0;
+    controller.lastAttachReset = Date.now();
 
     updateWetChain(controller);
     const cleanSlow = parseFloat(state.settings.slow.toFixed(2));
-    setMediaPlaybackState(controller, cleanSlow, false);
+    setMediaPlaybackState(controller, cleanSlow, true);
   }
 
   function scheduleAttachRetry(controller, retryCount = 0) {
     if (controller.pendingRetry) return;
-    const attempt = Number(retryCount) || 0;
+    const now = Date.now();
+    if (!controller.lastAttachReset || now - controller.lastAttachReset > 5 * 60 * 1000) {
+      controller.attachAttempts = 0;
+      controller.lastAttachReset = now;
+    }
+    const attempt = controller.attachAttempts || 0;
     if (attempt >= ATTACH_RETRY_MAX_ATTEMPTS) {
       teardownController(controller, false, state.context);
       return;
     }
     const delay = Math.min(200 * (attempt + 1), ATTACH_RETRY_MAX_DELAY_MS);
+    controller.attachAttempts = attempt + 1;
     controller.pendingRetry = setTimeout(() => {
       controller.pendingRetry = null;
       if (!controller.media.isConnected) return;
@@ -739,6 +751,15 @@ function applyRuntimeState(runtime) {
       if (controller.dattorroNode) {
         try { controller.dattorroNode.disconnect(); } catch {}
       }
+      if (controller.stream) {
+        controller.stream.getTracks().forEach((track) => {
+          try {
+            track.stop();
+          } catch {
+            // Track already stopped.
+          }
+        });
+      }
       restoreMediaPlaybackState(controller);
     }
 
@@ -751,6 +772,25 @@ function applyRuntimeState(runtime) {
     controller.dryGain = null;
     controller.masterGain = null;
     controller.dattorroNode = null;
+
+    if ((state.bypass || !state.eligible || removeCompletely) && context && typeof context.suspend === 'function') {
+      let anyAttached = false;
+      for (const remaining of state.media.values()) {
+        if (remaining.attached) {
+          anyAttached = true;
+          break;
+        }
+      }
+      if (!anyAttached && context.state === 'running') {
+        try {
+          void Promise.resolve(context.suspend()).catch(() => {
+            // Best effort only.
+          });
+        } catch {
+          // Best effort only.
+        }
+      }
+    }
 
     if (removeCompletely) {
       if (controller.rateHandler) {
@@ -779,7 +819,7 @@ function applyRuntimeState(runtime) {
     try {
       applyPitchState(media, controller.originalPitch);
       media.playbackRate = controller.originalRate;
-      media.muted = false;
+      media.muted = controller.originalMuted;
     } catch {
       // Ignore restore failures.
     } finally {

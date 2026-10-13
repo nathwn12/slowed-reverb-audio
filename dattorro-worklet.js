@@ -26,6 +26,30 @@ class DelayLine {
   }
 }
 
+// Dattorro's 1997 paper specifies its delay lengths in milliseconds; the integer
+// sample counts printed in it are exact only at the paper's 29.761 kHz rate. This
+// worklet runs at the host AudioContext rate (44.1/48 kHz), where those counts
+// would be ~62-67% of the designed lengths - a smaller, denser, brighter plate.
+// The millisecond lengths are therefore converted at the live sampleRate, so the
+// paper's counts are reproduced exactly when the rate is 29761.
+const INPUT_DIFF_MS = [4.771345, 3.595309, 12.734787, 9.307483]; // 142, 107, 379, 277
+const MOD_DELAY_MS = [22.579886, 30.509727]; // 672, 908
+const PRE_DAMP_MS = [149.625349, 141.695508]; // 4453, 4217
+const PRE_DAMP_TAPS_MS = [
+  [11.861161, 121.870905, 66.866033], // 353, 3627, 1990
+  [8.937872, 99.929438, 70.931756], // 266, 2974, 2111
+];
+const DECAY_DIFF2_MS = [60.481839, 89.244313]; // 1800, 2656
+const DECAY_DIFF2_TAPS_MS = [
+  [6.283391, 41.262054], // 187, 1228
+  [11.256342, 64.278754], // 335, 1913
+];
+const POST_DAMP_MS = [124.9958, 106.280031]; // 3720, 3163
+const POST_DAMP_TAPS_MS = [
+  [35.818689, 89.81553], // 1066, 2673
+  [4.065724, 67.067639], // 121, 1996
+];
+
 class DattorroReverbProcessor extends AudioWorkletProcessor {
   constructor() {
     super();
@@ -60,6 +84,27 @@ class DattorroReverbProcessor extends AudioWorkletProcessor {
     return s;
   }
 
+  // Convert a Dattorro millisecond delay length to samples at the live rate.
+  msToSamples(ms) {
+    return Math.round((ms * this.sr) / 1000);
+  }
+
+  allpassLine(ms) {
+    const delay = this.msToSamples(ms);
+    const size = this.np2(delay);
+    return { buf: new Float32Array(size), mask: size - 1, off: size - delay };
+  }
+
+  // The modulated tank lines sweep +-modDepth samples around their base delay, so
+  // the power-of-two buffer reserves that headroom; a negative read offset would
+  // otherwise wrap and collapse the delay to a few samples.
+  modDelay(ms) {
+    const delay = this.msToSamples(ms);
+    const dl = new DelayLine(delay + this.modDepth);
+    dl.base = dl.buf.length - delay;
+    return dl;
+  }
+
   init() {
     this.t = 0;
     this.sr = sampleRate;
@@ -80,41 +125,33 @@ class DattorroReverbProcessor extends AudioWorkletProcessor {
     this.preBuf = new Float32Array(Math.ceil(sampleRate * 0.1));
     this.preIdx = 0;
 
-    this.inDiff = [
-      { buf: new Float32Array(this.np2(142)), mask: this.np2(142) - 1, off: this.np2(142) - 142 },
-      { buf: new Float32Array(this.np2(107)), mask: this.np2(107) - 1, off: this.np2(107) - 107 },
-      { buf: new Float32Array(this.np2(379)), mask: this.np2(379) - 1, off: this.np2(379) - 379 },
-      { buf: new Float32Array(this.np2(277)), mask: this.np2(277) - 1, off: this.np2(277) - 277 },
-    ];
+    this.inDiff = INPUT_DIFF_MS.map((ms) => this.allpassLine(ms));
 
-    this.modDelay1 = new DelayLine(672);
-    this.modDelay2 = new DelayLine(908);
-    // Base offsets for the delay-line modulation triangle (samples).
-    this.modDelay1.base = this.modDelay1.offset;
-    this.modDelay2.base = this.modDelay2.offset;
     this.modDepth = 8;
+    this.modDelay1 = this.modDelay(MOD_DELAY_MS[0]);
+    this.modDelay2 = this.modDelay(MOD_DELAY_MS[1]);
     this.modPhase = 0;
     this.modDir = 1;
 
-    this.preDampDL = [new DelayLine(4453), new DelayLine(4217)];
-    this.preDampDL[0].setTap('out1', 353);
-    this.preDampDL[0].setTap('out2', 3627);
-    this.preDampDL[0].setTap('out3', 1990);
-    this.preDampDL[1].setTap('out1', 266);
-    this.preDampDL[1].setTap('out2', 2974);
-    this.preDampDL[1].setTap('out3', 2111);
+    this.preDampDL = [new DelayLine(this.msToSamples(PRE_DAMP_MS[0])), new DelayLine(this.msToSamples(PRE_DAMP_MS[1]))];
+    this.preDampDL[0].setTap('out1', this.msToSamples(PRE_DAMP_TAPS_MS[0][0]));
+    this.preDampDL[0].setTap('out2', this.msToSamples(PRE_DAMP_TAPS_MS[0][1]));
+    this.preDampDL[0].setTap('out3', this.msToSamples(PRE_DAMP_TAPS_MS[0][2]));
+    this.preDampDL[1].setTap('out1', this.msToSamples(PRE_DAMP_TAPS_MS[1][0]));
+    this.preDampDL[1].setTap('out2', this.msToSamples(PRE_DAMP_TAPS_MS[1][1]));
+    this.preDampDL[1].setTap('out3', this.msToSamples(PRE_DAMP_TAPS_MS[1][2]));
 
-    this.decayDiff2 = [new DelayLine(1800), new DelayLine(2656)];
-    this.decayDiff2[0].setTap('out1', 187);
-    this.decayDiff2[0].setTap('out2', 1228);
-    this.decayDiff2[1].setTap('out1', 335);
-    this.decayDiff2[1].setTap('out2', 1913);
+    this.decayDiff2 = [new DelayLine(this.msToSamples(DECAY_DIFF2_MS[0])), new DelayLine(this.msToSamples(DECAY_DIFF2_MS[1]))];
+    this.decayDiff2[0].setTap('out1', this.msToSamples(DECAY_DIFF2_TAPS_MS[0][0]));
+    this.decayDiff2[0].setTap('out2', this.msToSamples(DECAY_DIFF2_TAPS_MS[0][1]));
+    this.decayDiff2[1].setTap('out1', this.msToSamples(DECAY_DIFF2_TAPS_MS[1][0]));
+    this.decayDiff2[1].setTap('out2', this.msToSamples(DECAY_DIFF2_TAPS_MS[1][1]));
 
-    this.postDampDL = [new DelayLine(3720), new DelayLine(3163)];
-    this.postDampDL[0].setTap('out1', 1066);
-    this.postDampDL[0].setTap('out2', 2673);
-    this.postDampDL[1].setTap('out1', 121);
-    this.postDampDL[1].setTap('out2', 1996);
+    this.postDampDL = [new DelayLine(this.msToSamples(POST_DAMP_MS[0])), new DelayLine(this.msToSamples(POST_DAMP_MS[1]))];
+    this.postDampDL[0].setTap('out1', this.msToSamples(POST_DAMP_TAPS_MS[0][0]));
+    this.postDampDL[0].setTap('out2', this.msToSamples(POST_DAMP_TAPS_MS[0][1]));
+    this.postDampDL[1].setTap('out1', this.msToSamples(POST_DAMP_TAPS_MS[1][0]));
+    this.postDampDL[1].setTap('out2', this.msToSamples(POST_DAMP_TAPS_MS[1][1]));
   }
 
   allpassAp(buf, mask, off, gain, x) {

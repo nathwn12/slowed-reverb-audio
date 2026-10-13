@@ -213,7 +213,7 @@ function applyRuntimeState(runtime) {
       for (const controller of state.media.values()) {
         if (!controller.attached || controller.failed) continue;
         if (Math.abs(controller.media.playbackRate - state.settings.slow) > 0.02) {
-          setMediaPlaybackState(controller, state.settings.slow, true);
+          setMediaPlaybackState(controller, state.settings.slow);
         }
       }
     }, 2000);
@@ -330,7 +330,7 @@ function applyRuntimeState(runtime) {
     controller.rateHandler = () => {
       if (controller.internalRateWrite) return;
       if (shouldBeActiveForController(controller)) {
-        setMediaPlaybackState(controller, state.settings.slow, true);
+        setMediaPlaybackState(controller, state.settings.slow);
       } else {
         controller.originalRate = media.playbackRate;
         controller.originalPitch = readPitchState(media);
@@ -406,7 +406,7 @@ function applyRuntimeState(runtime) {
 
     updateWetChain(controller);
     const cleanSlow = parseFloat(state.settings.slow.toFixed(2));
-    setMediaPlaybackState(controller, cleanSlow, true);
+    setMediaPlaybackState(controller, cleanSlow);
   }
 
   function scheduleAttachRetry(controller, retryCount = 0) {
@@ -706,13 +706,17 @@ function applyRuntimeState(runtime) {
     return true;
   }
 
-  function setMediaPlaybackState(controller, rate, preservePitch) {
+  function setMediaPlaybackState(controller, rate) {
     const media = controller.media;
     const neutral = Math.abs(rate - 1) < 0.001;
     const intendedRate = neutral ? controller.originalRate : parseFloat(rate.toFixed(2));
+    // Speed and pitch move together: a non-neutral rate write always forces
+    // pitch-preservation OFF across all three vendor spellings (and the guard
+    // below re-asserts it after the page player writes the aliases); only the
+    // neutral restore puts the element's own pitch state back.
     const intendedPitch = neutral
       ? controller.originalPitch
-      : { preservesPitch: preservePitch, mozPreservesPitch: preservePitch, webkitPreservesPitch: preservePitch };
+      : { preservesPitch: false, mozPreservesPitch: false, webkitPreservesPitch: false };
     const intendedMuted = controller.attached && !controller.sourceStale;
 
     if (media.playbackRate === intendedRate && media.muted === intendedMuted && pitchStateMatches(media, intendedPitch)) {
@@ -726,7 +730,7 @@ function applyRuntimeState(runtime) {
         applyPitchState(media, controller.originalPitch);
         media.playbackRate = controller.originalRate;
       } else {
-        setPreservesPitch(media, preservePitch);
+        setPreservesPitch(media, false);
         media.playbackRate = parseFloat(rate.toFixed(2));
       }
       media.muted = intendedMuted;
@@ -832,8 +836,9 @@ function applyRuntimeState(runtime) {
   // Chromium-only, but DO NOT strip the prefixed aliases below.
   // Chrome exposes `mozPreservesPitch`/`webkitPreservesPitch` as real,
   // writable HTMLMediaElement properties, and YouTube's own player reads and
-  // writes them. If we only set `preservesPitch`, YouTube can clobber our
-  // pitch-preservation and the slow effect reverts to chipmunk audio.
+  // writes them. If we only wrote `preservesPitch`, YouTube could flip
+  // preservation back on and the slow effect would lose its pitch drop: every
+  // rate write has to force all three aliases off.
   function readPitchState(media) {
     return {
       preservesPitch: readMaybe(media, 'preservesPitch'),

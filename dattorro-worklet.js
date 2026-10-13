@@ -77,7 +77,7 @@ class DattorroReverbProcessor extends AudioWorkletProcessor {
     this.damping = [0, 0];
     this.hpf = 0;
     this.wetLpf = [0, 0];
-    this.preBuf = new Float32Array(Math.ceil(sampleRate * 0.6));
+    this.preBuf = new Float32Array(Math.ceil(sampleRate * 0.1));
     this.preIdx = 0;
 
     this.inDiff = [
@@ -150,7 +150,7 @@ class DattorroReverbProcessor extends AudioWorkletProcessor {
 
       this.preBuf[this.preIdx] = x;
       this.preIdx = (this.preIdx + 1) % this.preBuf.length;
-      const pdSamps = Math.floor(this.predelay * sr);
+      const pdSamps = Math.floor(this.predelay * sr * 0.1);
       const rdIdx = (this.preIdx - pdSamps + this.preBuf.length) % this.preBuf.length;
       x = this.preBuf[rdIdx];
 
@@ -223,14 +223,8 @@ class DattorroReverbProcessor extends AudioWorkletProcessor {
         this.wetLpf[0] += lpfCoeff * (wL - this.wetLpf[0]);
         this.wetLpf[1] += lpfCoeff * (wR - this.wetLpf[1]);
 
-        const satL = this.wetLpf[0] / (1 + Math.abs(this.wetLpf[0]));
-        const satR = this.wetLpf[1] / (1 + Math.abs(this.wetLpf[1]));
-        if (out.length < 2) {
-          outL[i] = this.wetGain * 0.5 * (satL + satR);
-        } else {
-          outL[i] = this.wetGain * satL;
-          outR[i] = this.wetGain * satR;
-        }
+        outL[i] = this.wetGain * (this.wetLpf[0] / (1 + Math.abs(this.wetLpf[0])));
+        outR[i] = this.wetGain * (this.wetLpf[1] / (1 + Math.abs(this.wetLpf[1])));
       }
 
       this.t++;

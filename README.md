@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/icon.svg" width="120" height="120" alt="Slowed Reverb Audio icon" />
+  <img src="audio/icon-128.png" width="120" height="120" alt="Slowed Reverb Audio icon" />
 </p>
 <h1 align="center">Slowed Reverb Audio</h1>
 <p align="center"><strong>Slow YouTube audio and add built-in reverb — entirely in the browser.</strong></p>

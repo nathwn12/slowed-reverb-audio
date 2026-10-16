@@ -101,13 +101,13 @@ CHANGELOG.md             release history (Keep a Changelog)
 
 Small, focused PRs from a feature branch; keep the unpacked-load flow working, keep `npm run lint` clean, and add a [CHANGELOG.md](CHANGELOG.md) entry for user-facing changes. See [PRIVACY_POLICY.md](PRIVACY_POLICY.md) and [STORE_SUBMISSION.md](STORE_SUBMISSION.md) for the store-facing constraints.
 
-## Credits
-
-The built-in reverb implements the plate algorithm from Jon Dattorro's "Effect Design, Part 1: Reverberator and Other Filters" (1997); delay constants follow the paper. This project is not affiliated with the author.
-
 ## License
 
 MIT — see [LICENSE](LICENSE).
+
+## Credits
+
+The built-in reverb implements the plate algorithm from Jon Dattorro's "Effect Design, Part 1: Reverberator and Other Filters" (1997); delay constants follow the paper. This project is not affiliated with the author.
 
 <!-- nathwn12 house footer: identical in every repo. Do not edit. -->
 <p align="center">

@@ -14,15 +14,6 @@ Open `chrome://extensions`, switch on Developer mode, choose Load unpacked, and 
 
 Once it loads, open a YouTube or YouTube Music tab, start playback, and click the extension icon. You need Chrome or Brave on desktop before any of this works.
 
-### Or let your AI install it
-
-```text
-Clone nathwn12/slowed-reverb-audio and load its root as an unpacked extension in Chrome or Brave with Developer mode on.
-Open a YouTube video, start playback, and open the extension popup.
-Confirm the speed readout tracks the slider and the status line names the current tab.
-Run npm run lint from the repo root and report 0 errors and 0 warnings.
-```
-
 ### Offline or pinned
 
 Pin one exact commit for a repeatable install:

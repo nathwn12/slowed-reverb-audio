@@ -1,6 +1,8 @@
-# Slowed Reverb Audio
-
-**Slow a YouTube track and wash it in plate reverb, right in your browser.**
+<p align="center">
+  <img src="audio/icon-128.png" width="120" height="120" alt="Slowed Reverb Audio icon" />
+</p>
+<h1 align="center">Slowed Reverb Audio</h1>
+<p align="center"><strong>Slow a YouTube track and wash it in plate reverb, right in your browser.</strong></p>
 
 ## Install
 
@@ -60,3 +62,11 @@ Your per-site speed, reverb, and Active state persist across restart and apply a
 - Privacy policy: PRIVACY_POLICY.md
 - Changelog: CHANGELOG.md
 - License: LICENSE (MIT)
+
+<!-- nathwn12 house footer: identical in every repo. Do not edit. -->
+<p align="center">
+  <a href="https://github.com/nathwn12"><img src="assets/signature.svg" width="96" alt="nathwn12" /></a>
+</p>
+<p align="center">
+  <sub>Built by <a href="https://github.com/nathwn12">nathwn12</a> · <a href="https://github.com/nathwn12?tab=repositories">All projects</a></sub>
+</p>

@@ -61,7 +61,7 @@ Your per-site speed, reverb, and Active state persist across restart and apply a
 - Repository: https://github.com/nathwn12/slowed-reverb-audio
 - Privacy policy: PRIVACY_POLICY.md
 - Changelog: CHANGELOG.md
-- License: LICENSE (MIT)
+- License: MIT, see [LICENSE](LICENSE)
 
 <!-- nathwn12 house footer: identical in every repo. Do not edit. -->
 <p align="center">

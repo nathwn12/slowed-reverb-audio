@@ -99,10 +99,13 @@
     document.addEventListener('play', (event) => {
       const media = event.target;
       if (!(media instanceof HTMLMediaElement)) return;
-      trackMedia(media);
-      syncMediaController(state.media.get(media));
+      const controller = trackMedia(media);
+      // A fresh playback start gets a fresh mute-correction budget; a page that
+      // fought the last track must not leave the next one permanently unmuted.
+      resetMuteDampener(controller);
+      syncMediaController(controller);
       void resumeContext().then(() => {
-        syncMediaController(state.media.get(media));
+        syncMediaController(controller);
       });
     }, true);
 
@@ -205,6 +208,16 @@ function applyRuntimeState(runtime) {
   let rateWatchdogTimer = null;
   const ATTACH_RETRY_MAX_ATTEMPTS = 20;
   const ATTACH_RETRY_MAX_DELAY_MS = 2000;
+  // Mute enforcement is a correction loop against a page that may fight back.
+  // A page that restores `muted = false` from its own `volumechange` listener
+  // can otherwise spin forever, so each element gets a rolling budget of
+  // corrections per second. Eight leaves headroom for YouTube's own start
+  // sequence (~6 unmute writes) while still starving a spin loop. Spending the
+  // budget pauses corrections for a cool-down rather than latching: after the
+  // deadline the 2 s watchdog and the next volumechange can correct again.
+  const MUTE_CORRECTION_WINDOW_MS = 1000;
+  const MUTE_CORRECTION_BUDGET = 8;
+  const MUTE_COOLDOWN_MS = 1000;
 
   function startRateWatchdog() {
     stopRateWatchdog();
@@ -212,6 +225,9 @@ function applyRuntimeState(runtime) {
       if (!state.eligible || state.bypass) return;
       for (const controller of state.media.values()) {
         if (!controller.attached || controller.failed) continue;
+        // Mute is part of the contract, not just an attach-time action: the page
+        // can unmute itself at any point. Independent of the rate-drift check.
+        enforceElementMute(controller);
         if (Math.abs(controller.media.playbackRate - state.settings.slow) > 0.02) {
           setMediaPlaybackState(controller, state.settings.slow);
         }
@@ -320,6 +336,9 @@ function applyRuntimeState(runtime) {
       originalPitch: readPitchState(media),
       originalMuted: media.muted,
       internalRateWrite: false,
+      internalMuteWrite: false,
+      muteCorrections: [],
+      mutePausedUntil: 0,
       lastPostedParams: null,
       rateHandler: null,
       resetHandler: null,
@@ -338,6 +357,7 @@ function applyRuntimeState(runtime) {
     };
 
     controller.resetHandler = () => {
+      resetMuteDampener(controller);
       if (controller.attached) {
         controller.sourceStale = true;
         if (controller.masterGain) {
@@ -360,8 +380,10 @@ function applyRuntimeState(runtime) {
     };
 
     controller.volumeHandler = () => {
-      if (!controller.attached || !controller.masterGain) return;
-      rampGain(controller.masterGain.gain, controller.media.volume);
+      if (controller.attached && controller.masterGain) {
+        rampGain(controller.masterGain.gain, controller.media.volume);
+      }
+      enforceElementMute(controller);
     };
 
     media.addEventListener('ratechange', controller.rateHandler);
@@ -512,6 +534,11 @@ function applyRuntimeState(runtime) {
       dattorroNode.connect(masterGain);
       masterGain.connect(context.destination);
 
+      // Direct, not budgeted: this is the one write that establishes the
+      // contract, and it must land before `controller.attached = true` so the
+      // volumechange it queues cannot re-enter a half-attached controller
+      // (`enforceElementMute` gates on `attached`). The budget is cleared just
+      // below, so this single write never eats into the correction allowance.
       controller.media.muted = true;
       rampGain(dryGain.gain, 1 - initialParams.wetGain);
       rampGain(masterGain.gain, controller.media.volume);
@@ -524,6 +551,7 @@ function applyRuntimeState(runtime) {
       controller.attached = true;
       controller.attachedSrc = controller.media.currentSrc;
       controller.sourceStale = false;
+      resetMuteDampener(controller);
       controller.lastPostedParams = JSON.stringify(initialParams);
       controller.attachError = '';
       void resumeContext().then(() => {
@@ -580,6 +608,10 @@ function applyRuntimeState(runtime) {
       if (controller.masterGain) {
         rampGain(controller.masterGain.gain, controller.media.volume);
       }
+
+      // The stale window unmuted the element on purpose; a live source means
+      // the element goes back to mirroring `attached`.
+      enforceElementMute(controller);
 
       disconnectNode(previousSource);
       if (previousStream) {
@@ -706,6 +738,57 @@ function applyRuntimeState(runtime) {
     return true;
   }
 
+  // Clears the mute-correction budget. Called on every fresh playback start
+  // (attach / play / emptied) and on restore, so a paused dampener never
+  // outlives the track it was paused on.
+  function resetMuteDampener(controller) {
+    if (!controller) return;
+    controller.muteCorrections.length = 0;
+    controller.mutePausedUntil = 0;
+  }
+
+  // Rolling-window budget plus a cool-down. Prune corrections older than the
+  // window, then claim one slot; a spent budget sets a deadline instead of a
+  // latch, so corrections resume on their own once the cool-down passes.
+  function claimMuteCorrection(controller) {
+    const now = Date.now();
+    if (now < controller.mutePausedUntil) return false;
+    controller.mutePausedUntil = 0;
+    const cutoff = now - MUTE_CORRECTION_WINDOW_MS;
+    const corrections = controller.muteCorrections;
+    while (corrections.length > 0 && corrections[0] <= cutoff) {
+      corrections.shift();
+    }
+    if (corrections.length >= MUTE_CORRECTION_BUDGET) {
+      controller.mutePausedUntil = now + MUTE_COOLDOWN_MS;
+      return false;
+    }
+    corrections.push(now);
+    return true;
+  }
+
+  // `media.muted` mirrors `controller.attached` while the graph plays the
+  // element (AGENTS.md "Mute semantics"). The page can write `muted = false`
+  // during its own start sequence, so re-assert the contract at every
+  // volumechange and from the watchdog instead of only at attach time.
+  function enforceElementMute(controller) {
+    if (!controller || !controller.attached || controller.sourceStale) return;
+    const media = controller.media;
+    if (!media || media.muted === true) return;
+    if (controller.internalMuteWrite) return;
+    if (!claimMuteCorrection(controller)) return;
+
+    controller.internalMuteWrite = true;
+
+    try {
+      media.muted = true;
+    } finally {
+      queueMicrotask(() => {
+        controller.internalMuteWrite = false;
+      });
+    }
+  }
+
   function setMediaPlaybackState(controller, rate) {
     const media = controller.media;
     const neutral = Math.abs(rate - 1) < 0.001;
@@ -733,7 +816,14 @@ function applyRuntimeState(runtime) {
         setPreservesPitch(media, false);
         media.playbackRate = parseFloat(rate.toFixed(2));
       }
-      media.muted = intendedMuted;
+      if (intendedMuted) {
+        // Same budget as the volumechange path: a page can restore its rate and
+        // fire `ratechange` as easily as `volumechange`, so this write must not
+        // be a free extra correction. Only the deliberate unmute is direct.
+        enforceElementMute(controller);
+      } else {
+        media.muted = false;
+      }
     } finally {
       queueMicrotask(() => {
         controller.internalRateWrite = false;
@@ -818,6 +908,7 @@ function applyRuntimeState(runtime) {
 
   function restoreMediaPlaybackState(controller) {
     const media = controller.media;
+    resetMuteDampener(controller);
     controller.internalRateWrite = true;
 
     try {
